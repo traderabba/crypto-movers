@@ -53,12 +53,16 @@ function updateDisplay(limit) {
     const gainersToShow = globalMarketData.gainers.slice(0, safeLimit);
     const losersToShow = globalMarketData.losers.slice(0, safeLimit);
 
-    const createBubble = (c, colorClass) => `
-        <div class="bubble">
-            <img src="${c.image}" crossorigin="anonymous" alt="${c.symbol}" onerror="this.src='/ímages/error.png'">
+    // UPDATED: Added onclick handler to open modal
+    const createBubble = (c, colorClass) => {
+        const coinData = JSON.stringify(c).replace(/"/g, '&quot;');
+        return `
+        <div class="bubble" onclick="openModal(${coinData})">
+            <img src="${c.image}" crossorigin="anonymous" alt="${c.symbol}" onerror="this.src='/images/error.png'">
             <div class="symbol">${c.symbol}</div>
             <div class="percent ${colorClass}">${c.price_change_percentage_24h.toFixed(2)}%</div>
         </div>`;
+    };
 
     document.getElementById('gainers-list').innerHTML = gainersToShow.map(c => createBubble(c, 'gainer-percent')).join('');
     document.getElementById('losers-list').innerHTML = losersToShow.map(c => createBubble(c, 'loser-percent')).join('');
@@ -185,6 +189,66 @@ async function captureSection(type) {
         btn.innerHTML = originalText;
         btn.disabled = false;
     }
+}
+
+// === NEW: MODAL LOGIC ===
+function openModal(coin) {
+    const modal = document.getElementById('coin-modal');
+    if(!modal) return;
+
+    // 1. Populate Header
+    document.getElementById('m-img').src = coin.image;
+    document.getElementById('m-name').innerText = coin.name;
+    document.getElementById('m-symbol').innerText = coin.symbol.toUpperCase();
+    
+    // Format Price
+    const price = coin.current_price < 1 
+        ? coin.current_price.toFixed(6) 
+        : coin.current_price.toLocaleString('en-US', {style:'currency', currency:'USD'});
+    document.getElementById('m-price').innerText = price;
+
+    // 2. Populate Stats
+    const formatMoney = (num) => num ? '$' + num.toLocaleString() : 'N/A';
+    document.getElementById('m-cap').innerText = formatMoney(coin.market_cap);
+    document.getElementById('m-vol').innerText = formatMoney(coin.total_volume);
+
+    // 3. Populate History
+    const setPercent = (id, val) => {
+        const el = document.getElementById(id);
+        if (val === null || val === undefined) {
+            el.innerText = "-";
+            el.className = "percent-tag gray";
+            return;
+        }
+        el.innerText = val.toFixed(2) + "%";
+        el.className = `percent-tag ${val >= 0 ? 'green' : 'red'}`;
+    };
+
+    setPercent('m-24h', coin.price_change_percentage_24h);
+    setPercent('m-7d', coin.price_change_percentage_7d);
+    setPercent('m-30d', coin.price_change_percentage_30d);
+    setPercent('m-1y', coin.price_change_percentage_1y);
+
+    // 4. Set Links
+    document.getElementById('m-link-cg').href = `https://www.coingecko.com/en/coins/${coin.id}`;
+    document.getElementById('m-link-tv').href = `https://www.tradingview.com/symbols/${coin.symbol.toUpperCase()}USD/?exchange=CRYPTO`;
+
+    modal.classList.add('active');
+}
+
+function closeModal() {
+    const modal = document.getElementById('coin-modal');
+    if(modal) modal.classList.remove('active');
+}
+
+// Close on click outside
+const modalEl = document.getElementById('coin-modal');
+if(modalEl) {
+    modalEl.addEventListener('click', (e) => {
+        if (e.target === modalEl) {
+            closeModal();
+        }
+    });
 }
 
 window.addEventListener('DOMContentLoaded', init);

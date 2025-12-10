@@ -5,24 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     
-    <title>DEX Movers | Coming Soon</title>
+    <title>DEX Movers - Top Gainers on Solana, Ethereum, BNB & Base</title>
     
-    <meta name="description" content="Top decentralized exchange (DEX) gainers and losers. Tracking on-chain data from Uniswap, Raydium, Pump.fun, and muc more.">
-    <meta name="keywords" content="dex movers, uniswap gainers, raydium tracker, pump.fun analysis, on-chain data, crypto movers">
+    <meta name="description" content="Track top performing liquidity pools and tokens across Solana, Ethereum, BNB Chain, and Base. Real-time DEX gainers and losers.">
+    <meta name="keywords" content="dex gainers, solana top gainers, base chain movers, raydium gainers, uniswap top tokens, geckoterminal api">
     <meta name="author" content="TraderAbba">
 
-    <meta property="og:title" content="DEX Movers | Coming Soon">
-    <meta property="og:description" content="Tracking on-chain movers from Uniswap, Raydium, and Pump.fun. Under construction.">
+    <meta property="og:title" content="DEX Movers | Cross-Chain Analytics">
+    <meta property="og:description" content="Top 20 Gainers & Losers on Solana, Ethereum, BNB, and Base.">
     <meta property="og:image" content="https://cryptomovers.pages.dev/images/social-media.jpg">
     <meta property="og:type" content="website">
 
-    <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="DEX Movers | Coming Soon">
-    <meta name="twitter:description" content="Tracking on-chain movers from Uniswap, Raydium, and Pump.fun.">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="DEX Movers | Cross-Chain Analytics">
+    <meta name="twitter:description" content="Top 20 Gainers & Losers on Solana, Ethereum, BNB, and Base.">
     <meta name="twitter:image" content="https://cryptomovers.pages.dev/images/social-media.jpg">
     
     <link rel="icon" type="image/png" href="/images/bullish.png">
     <link rel="stylesheet" href="style.css">
+    <script src="/iscript/html2canvas.min.js"></script>
 </head>
 <body>
 
@@ -49,46 +50,120 @@
         </div>
     </nav>
 
+    <div id="loader">
+        <div class="spinner"></div>
+        <p>Analyzing On-Chain Data...</p>
+    </div>
+
     <main id="app-content">
-        <div class="hero" style="min-height: 70vh; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center;">
+        <div class="hero">
+            <h1>DEX Market Pulse</h1>
+            <p class="sub-text">Top On-Chain Movers (24H)</p>
             
-            <div style="background: #f1f5f9; padding: 30px; border-radius: 50%; margin-bottom: 25px; box-shadow: var(--shadow);">
-                <i class="fas fa-network-wired" style="font-size: 50px; color: var(--primary);"></i>
-            </div>
+            <div class="controls" data-html2canvas-ignore="true">
+                <button class="btn btn-gainers" id="btn-gain" onclick="captureSection('gainers')">
+                    <i class="fas fa-camera"></i> Snap Gainers
+                </button>
+                <button class="btn btn-losers" id="btn-lose" onclick="captureSection('losers')">
+                    <i class="fas fa-camera"></i> Snap Losers
+                </button>
+                
+                <div class="select-wrapper">
+                    <select id="network-select" class="btn btn-sort" style="background-color: #0f172a;" onchange="handleNetworkChange(this.value)">
+                        <option value="all" selected>All Networks</option>
+                        <option value="solana">Solana</option>
+                        <option value="eth">Ethereum</option>
+                        <option value="bsc">BNB Chain</option>
+                        <option value="base">Base</option>
+                    </select>
+                </div>
 
-            <h1 style="font-size: 36px; margin-bottom: 10px;">DEX Analytics Incoming</h1>
+                <div class="select-wrapper">
+                    <select id="sort-select" class="btn btn-sort" onchange="handleSortChange(this.value)">
+                        <option value="5">Top 5</option>
+                        <option value="10">Top 10</option>
+                        <option value="20" selected>Top 20</option>
+                        <option value="30">Top 30</option>
+                    </select>
+                </div>
+            </div>
             
-            <p class="sub-text" style="max-width: 500px; margin: 0 auto 30px auto; font-size: 16px;">
-                We are currently building the engine to track on-chain movers from 
-                <strong>Uniswap</strong>, <strong>Raydium</strong>, and <strong>Pump.fun</strong>.
-            </p>
-
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: center;">
-                <span class="btn" style="background: #e2e8f0; color: #475569; cursor: default; box-shadow: none;">
-                    <i class="fas fa-hammer"></i> Under Construction
-                </span>
-                <a href="https://twitter.com/traderabba" target="_blank" class="btn" style="background: var(--dark);">
-                    <i class="fab fa-x-twitter"></i> Get Notified
-                </a>
-            </div>
-
+            <div id="status-msg" role="status">Connecting to GeckoTerminal...</div>
         </div>
+
+        <section id="gainers-wrapper" class="market-section">
+            <div class="section-header">
+                <h2><i class="fas fa-bolt" style="color:#10b981;"></i> Top Gainers <span id="gainers-network-label" style="font-size: 0.8em; opacity: 0.7; margin-left: 10px;">(Global)</span></h2>
+            </div>
+            <div class="container" id="gainers-list"></div>
+        </section>
+
+        <section id="losers-wrapper" class="market-section">
+            <div class="section-header">
+                <h2><i class="fas fa-skull" style="color:#ef4444;"></i> Top Losers <span id="losers-network-label" style="font-size: 0.8em; opacity: 0.7; margin-left: 10px;">(Global)</span></h2>
+            </div>
+            <div class="container" id="losers-list"></div>
+        </section>
+
+        <footer>
+            <div class="footer-content">
+                <div class="footer-logo">  <img src="/images/bullish.png" alt="icon"> Crypto Movers</div>
+                <div class="footer-nav">
+                    <a href="index.html" title="Homepage">Home</a>
+                    <a href="dex-movers.html">DEX Movers</a>
+                    <a href="contact-us.html">Contact Us</a>
+                </div>
+                <div class="copyright">
+                    &copy; 2025 Crypto Movers v2.0. Data by GeckoTerminal. Made With 💚 by <a href="https://linktr.ee/traderabba" target="_blank">@TraderAbba</a>
+                    <br>
+                    <span id="timestamp" style="color: #64748b;">Waiting for data...</span>
+                </div>
+            </div>
+        </footer>
     </main>
 
-    <footer>
-        <div class="footer-content">
-            <div class="footer-logo">  <img src="/images/bullish.png" alt="icon"> Crypto Movers</div>
-            <div class="footer-nav">
-                <a href="index.html" title="Homepage">Home</a>
-                <a href="dex-movers.html">DEX Movers</a>
-                <a href="contact-us.html">Contact Us</a>
+    <div id="coin-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal()">&times;</button>
+            
+            <div class="modal-header">
+                <img id="m-img" src="" alt="">
+                <div>
+                    <h2 id="m-name">Token</h2>
+                    <span id="m-symbol">TICKER</span>
+                </div>
+                <div id="m-price" class="modal-price">$0.00</div>
             </div>
-            <div class="copyright">
-                &copy; 2025 Crypto Movers v2.0. Made With 💚 by <a href="https://linktr.ee/traderabba" target="_blank">@TraderAbba</a>
+    
+            <div class="modal-grid">
+                <div class="stat-box">
+                    <span class="label">Pool Liquidity</span>
+                    <span class="value" id="m-cap">$0</span>
+                </div>
+                <div class="stat-box">
+                    <span class="label">24h Volume</span>
+                    <span class="value" id="m-vol">$0</span>
+                </div>
+            </div>
+    
+            <div class="modal-history">
+                <h3>Pool Performance</h3>
+                <div class="history-row">
+                    <span>24h Change</span> <span id="m-24h" class="percent-tag">0%</span>
+                </div>
+                <div class="history-row">
+                    <span>Network</span> <span id="m-network" class="percent-tag gray">--</span>
+                </div>
+            </div>
+    
+            <div class="modal-actions">
+                <a id="m-link-cg" href="#" target="_blank" class="action-btn cg-btn">
+                     <i class="fas fa-circle-nodes"></i> GeckoTerminal
+                </a>
             </div>
         </div>
-    </footer>
+    </div>
 
     <script src="script.js"></script>
 </body>
-</html>
+</html>j

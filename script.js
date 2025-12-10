@@ -1,11 +1,28 @@
 let globalMarketData = null;
+let globalDexData = null;
+let currentNetwork = 'all';
 
 async function init() {
     setupMenu();
-    if (!document.getElementById('gainers-list')) return;
-
-    const loader = document.getElementById('loader');
     
+    // DETECT PAGE: Check URL to decide which engine to load
+    const isDexPage = window.location.pathname.includes('dex-movers');
+    
+    if (isDexPage) {
+        await initDex();
+    } else {
+        await initCex();
+    }
+}
+
+// ==========================================
+// 1. CEX ENGINE (Home Page)
+// ==========================================
+
+async function initCex() {
+    if (!document.getElementById('gainers-list')) return;
+    const loader = document.getElementById('loader');
+
     try {
         const response = await fetch('/api/stats?t=' + Date.now());
         
@@ -28,20 +45,16 @@ async function init() {
         updateDisplay(20);
 
     } catch (e) {
-        console.error("Init Error:", e);
+        console.error("CEX Init Error:", e);
         if (loader) {
             loader.innerHTML = `
                 <div style="text-align:center; padding:20px;">
                     <h3 style="color:#ef4444">⚠️ Connection Failed</h3>
                     <p style="color:#64748b; margin:10px 0;">${e.message}</p>
-                    <button onclick="location.reload()" style="padding:10px 20px; background:#3b82f6; color:white; border:none; border-radius:8px;">Retry</button>
+                    <button onclick="location.reload()" class="btn" style="background:var(--dark)">Retry</button>
                 </div>`;
         }
     }
-}
-
-function handleSortChange(limit) {
-    updateDisplay(parseInt(limit));
 }
 
 function updateDisplay(limit) {
@@ -53,9 +66,14 @@ function updateDisplay(limit) {
     const gainersToShow = globalMarketData.gainers.slice(0, safeLimit);
     const losersToShow = globalMarketData.losers.slice(0, safeLimit);
 
-    // UPDATED: Added onclick handler to open modal
     const createBubble = (c, colorClass) => {
-        const coinData = JSON.stringify(c).replace(/"/g, '&quot;');
+        // Prepare CEX object for modal
+        const safeCoin = {
+            ...c,
+            isDex: false 
+        };
+        const coinData = JSON.stringify(safeCoin).replace(/"/g, '&quot;');
+        
         return `
         <div class="bubble" onclick="openModal(${coinData})">
             <img src="${c.image}" crossorigin="anonymous" alt="${c.symbol}" onerror="this.src='/images/error.png'">
@@ -67,6 +85,7 @@ function updateDisplay(limit) {
     document.getElementById('gainers-list').innerHTML = gainersToShow.map(c => createBubble(c, 'gainer-percent')).join('');
     document.getElementById('losers-list').innerHTML = losersToShow.map(c => createBubble(c, 'loser-percent')).join('');
 
+    // Timestamp & Status
     if (globalMarketData.timestamp) {
         const date = new Date(globalMarketData.timestamp);
         const timeEl = document.getElementById('timestamp');
@@ -81,6 +100,100 @@ function updateDisplay(limit) {
     
     const loader = document.getElementById('loader');
     if (loader) loader.style.display = 'none';
+}
+
+// ==========================================
+// 2. DEX ENGINE (DEX Movers Page)
+// ==========================================
+
+async function initDex() {
+    const loader = document.getElementById('loader');
+    if(loader) loader.style.display = 'flex';
+
+    try {
+        const response = await fetch('/api/dex-stats?t=' + Date.now());
+        if (!response.ok) throw new Error("DEX API Error");
+        const data = await response.json();
+        
+        globalDexData = data;
+        
+        // Render Default (All Networks)
+        updateDexDisplay('all', 20);
+        
+        if (data.timestamp) {
+            const timeEl = document.getElementById('timestamp');
+            if (timeEl) timeEl.innerText = "Last Updated: " + new Date(data.timestamp).toLocaleTimeString();
+        }
+
+        if(loader) loader.style.display = 'none';
+
+    } catch (e) {
+        console.error("DEX Init Error:", e);
+        if(loader) loader.innerHTML = `<div style="text-align:center"><h3 style="color:#ef4444">Connection Failed</h3><button onclick="location.reload()" class="btn">Retry</button></div>`;
+    }
+}
+
+function handleNetworkChange(network) {
+    currentNetwork = network;
+    const limit = document.getElementById('sort-select').value;
+    updateDexDisplay(network, parseInt(limit));
+}
+
+function updateDexDisplay(network, limit) {
+    if (!globalDexData || !globalDexData[network]) return;
+
+    const data = globalDexData[network];
+    const gainersList = document.getElementById('gainers-list');
+    const losersList = document.getElementById('losers-list');
+
+    // Update Section Labels
+    const netLabel = network === 'all' ? '(Global)' : `(${network.toUpperCase()})`;
+    const gLabel = document.getElementById('gainers-network-label');
+    const lLabel = document.getElementById('losers-network-label');
+    if(gLabel) gLabel.innerText = netLabel;
+    if(lLabel) lLabel.innerText = netLabel;
+
+    const createDexBubble = (c, colorClass) => {
+        // Prepare DEX object for modal (map fields to match openModal expectations)
+        const safeCoin = {
+            name: c.name,
+            symbol: c.symbol,
+            image: c.image || '/images/bullish.png',
+            current_price: parseFloat(c.price),
+            market_cap: c.liquidity, // Use Liquidity for Cap slot
+            total_volume: c.volume_24h,
+            price_change_percentage_24h: c.price_change_24h,
+            id: c.id, 
+            network: c.network,
+            address: c.address,
+            isDex: true
+        };
+        const coinData = JSON.stringify(safeCoin).replace(/"/g, '&quot;');
+        
+        return `
+        <div class="bubble" onclick="openModal(${coinData})">
+            <img src="${c.image}" crossorigin="anonymous" alt="${c.symbol}" onerror="this.src='/images/bullish.png'">
+            <div class="symbol">${c.symbol}</div>
+            <div class="percent ${colorClass}">${c.price_change_24h.toFixed(2)}%</div>
+            <div style="font-size:9px; color:#64748b; margin-top:2px;">${c.network.toUpperCase()}</div>
+        </div>`;
+    };
+
+    gainersList.innerHTML = data.gainers.slice(0, limit).map(c => createDexBubble(c, 'gainer-percent')).join('');
+    losersList.innerHTML = data.losers.slice(0, limit).map(c => createDexBubble(c, 'loser-percent')).join('');
+}
+
+// ==========================================
+// 3. SHARED HELPERS (Sort, Snap, Modal)
+// ==========================================
+
+function handleSortChange(limit) {
+    // Route to correct display function
+    if (window.location.pathname.includes('dex-movers')) {
+        updateDexDisplay(currentNetwork, parseInt(limit));
+    } else {
+        updateDisplay(parseInt(limit));
+    }
 }
 
 function setupMenu() {
@@ -117,8 +230,10 @@ function setupMenu() {
 async function captureSection(type) {
     const btn = document.getElementById(type === 'gainers' ? 'btn-gain' : 'btn-lose');
     const originalText = btn.innerHTML;
-    const sourceListId = type === 'gainers' ? 'gainers-list' : 'losers-list';
-    const count = document.getElementById(sourceListId).children.length;
+    
+    // Dynamic Title Generation
+    const isDex = window.location.pathname.includes('dex-movers');
+    const netText = isDex ? (currentNetwork === 'all' ? 'Global DEX' : currentNetwork.toUpperCase()) : 'Crypto';
     
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating HD...';
     btn.disabled = true;
@@ -133,7 +248,7 @@ async function captureSection(type) {
         });
 
         const titleIcon = type === 'gainers' ? '🔥' : '💀';
-        const titleText = type === 'gainers' ? `Top ${count} Gainers (24H)` : `Top ${count} Losers (24H)`;
+        const titleText = `${netText} Top ${type === 'gainers' ? 'Gainers' : 'Losers'} (24H)`;
         const titleColor = type === 'gainers' ? '#15803d' : '#b91c1c';
 
         reportCard.innerHTML = `
@@ -150,6 +265,7 @@ async function captureSection(type) {
             display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '35px', width: '100%', marginBottom: '40px'
         });
 
+        const sourceListId = type === 'gainers' ? 'gainers-list' : 'losers-list';
         const originalContainer = document.getElementById(sourceListId);
         const bubbles = originalContainer.querySelectorAll('.bubble');
 
@@ -158,12 +274,20 @@ async function captureSection(type) {
             if (type === 'gainers') clone.classList.add('force-gainer');
             else clone.classList.add('force-loser');
             Object.assign(clone.style, { width: '100%', height: '180px', margin: '0', boxShadow: '0 15px 30px rgba(0,0,0,0.08)' });
+            
             const img = clone.querySelector('img');
             Object.assign(img.style, { width: '64px', height: '64px', marginBottom: '12px' });
+            
             const symbol = clone.querySelector('.symbol');
             symbol.style.fontSize = '22px';
+            
             const percent = clone.querySelector('.percent');
             percent.style.fontSize = '20px';
+            
+            // Remove the tiny network label for snapshot clarity
+            const netLabel = clone.querySelector('div[style*="font-size:9px"]');
+            if(netLabel) netLabel.remove();
+
             gridContainer.appendChild(clone);
         });
 
@@ -178,7 +302,7 @@ async function captureSection(type) {
         document.body.appendChild(reportCard);
         const canvas = await html2canvas(reportCard, { scale: 3, useCORS: true, backgroundColor: null });
         const link = document.createElement('a');
-        link.download = `CTDGL_${type}_Top${count}_${new Date().toISOString().split('T')[0]}.png`;
+        link.download = `Movers_${netText}_${type}_${new Date().toISOString().split('T')[0]}.png`;
         link.href = canvas.toDataURL("image/png");
         link.click();
         document.body.removeChild(reportCard);
@@ -191,47 +315,81 @@ async function captureSection(type) {
     }
 }
 
-// === NEW: MODAL LOGIC ===
+// === SMART MODAL (Handles both CEX and DEX data) ===
 function openModal(coin) {
     const modal = document.getElementById('coin-modal');
     if(!modal) return;
 
-    // 1. Populate Header
+    // 1. Header
     document.getElementById('m-img').src = coin.image;
     document.getElementById('m-name').innerText = coin.name;
     document.getElementById('m-symbol').innerText = coin.symbol.toUpperCase();
     
-    // Format Price
-    const price = coin.current_price < 1 
-        ? coin.current_price.toFixed(6) 
-        : coin.current_price.toLocaleString('en-US', {style:'currency', currency:'USD'});
+    // Price Formatting
+    let price = "$0.00";
+    if (coin.current_price < 0.01) price = '$' + coin.current_price.toFixed(8);
+    else price = '$' + coin.current_price.toLocaleString('en-US');
     document.getElementById('m-price').innerText = price;
 
-    // 2. Populate Stats
+    // 2. Stats (Cap/Liq & Volume)
     const formatMoney = (num) => num ? '$' + num.toLocaleString() : 'N/A';
     document.getElementById('m-cap').innerText = formatMoney(coin.market_cap);
     document.getElementById('m-vol').innerText = formatMoney(coin.total_volume);
 
-    // 3. Populate History
-    const setPercent = (id, val) => {
-        const el = document.getElementById(id);
-        if (val === null || val === undefined) {
-            el.innerText = "-";
-            el.className = "percent-tag gray";
-            return;
+    // 3. Labels & History
+    const labelBox = document.querySelector('.stat-box .label');
+    const historySection = document.querySelector('.modal-history');
+    
+    if (coin.isDex) {
+        // DEX MODE
+        labelBox.innerText = "Pool Liquidity";
+        // Show Network instead of 7d/30d
+        historySection.innerHTML = `
+            <h3>Pool Performance</h3>
+            <div class="history-row"><span>24h Change</span> <span class="percent-tag ${coin.price_change_percentage_24h >= 0 ? 'green':'red'}">${coin.price_change_percentage_24h.toFixed(2)}%</span></div>
+            <div class="history-row"><span>Network</span> <span class="percent-tag gray">${coin.network.toUpperCase()}</span></div>
+        `;
+    } else {
+        // CEX MODE
+        labelBox.innerText = "Market Cap";
+        historySection.innerHTML = `
+            <h3>Price Performance</h3>
+            <div class="history-row"><span>24h</span> <span id="m-24h" class="percent-tag"></span></div>
+            <div class="history-row"><span>7d</span> <span id="m-7d" class="percent-tag"></span></div>
+            <div class="history-row"><span>30d</span> <span id="m-30d" class="percent-tag"></span></div>
+            <div class="history-row"><span>1y</span> <span id="m-1y" class="percent-tag"></span></div>
+        `;
+        
+        // Populate CEX percentages
+        const setPercent = (id, val) => {
+            const el = document.getElementById(id);
+            if(!el) return;
+            if (val === undefined || val === null) { el.innerText = "-"; el.className = "percent-tag gray"; return; }
+            el.innerText = val.toFixed(2) + "%";
+            el.className = `percent-tag ${val >= 0 ? 'green' : 'red'}`;
+        };
+        setPercent('m-24h', coin.price_change_percentage_24h);
+        setPercent('m-7d', coin.price_change_percentage_7d);
+        setPercent('m-30d', coin.price_change_percentage_30d);
+        setPercent('m-1y', coin.price_change_percentage_1y);
+    }
+
+    // 4. Links
+    const cgBtn = document.getElementById('m-link-cg');
+    const tvBtn = document.getElementById('m-link-tv'); // TradingView button (might be hidden for DEX)
+
+    if (coin.isDex) {
+        cgBtn.href = `https://www.geckoterminal.com/${coin.network}/pools/${coin.address}`;
+        cgBtn.innerHTML = '<i class="fas fa-circle-nodes"></i> GeckoTerminal';
+        if(tvBtn) tvBtn.style.display = 'none'; // Hide TV for DEX as address might not match
+    } else {
+        cgBtn.href = `https://www.coingecko.com/en/coins/${coin.id}`;
+        cgBtn.innerHTML = '<i class="fas fa-coins"></i> CoinGecko';
+        if(tvBtn) {
+            tvBtn.style.display = 'flex';
+            tvBtn.href = `https://www.tradingview.com/symbols/${coin.symbol.toUpperCase()}USD/?exchange=CRYPTO`;
         }
-        el.innerText = val.toFixed(2) + "%";
-        el.className = `percent-tag ${val >= 0 ? 'green' : 'red'}`;
-    };
-
-    setPercent('m-24h', coin.price_change_percentage_24h);
-    setPercent('m-7d', coin.price_change_percentage_7d);
-    setPercent('m-30d', coin.price_change_percentage_30d);
-    setPercent('m-1y', coin.price_change_percentage_1y);
-
-    // 4. Set Links
-    document.getElementById('m-link-cg').href = `https://www.coingecko.com/en/coins/${coin.id}`;
-    document.getElementById('m-link-tv').href = `https://www.tradingview.com/symbols/${coin.symbol.toUpperCase()}USD/?exchange=CRYPTO`;
+    }
 
     modal.classList.add('active');
 }
@@ -241,14 +399,12 @@ function closeModal() {
     if(modal) modal.classList.remove('active');
 }
 
-// Close on click outside
 const modalEl = document.getElementById('coin-modal');
 if(modalEl) {
     modalEl.addEventListener('click', (e) => {
-        if (e.target === modalEl) {
-            closeModal();
-        }
+        if (e.target === modalEl) closeModal();
     });
 }
 
 window.addEventListener('DOMContentLoaded', init);
+

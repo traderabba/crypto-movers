@@ -1,7 +1,7 @@
 // _worker.js
 
 // === CONFIGURATION ===
-const CACHE_KEY = "market_data_v6"; // v6: Fresh start
+const CACHE_KEY = "market_data_v7"; // v7: Updated for Overlay Data
 const CACHE_LOCK_KEY = "market_data_lock";
 const UPDATE_INTERVAL_MS = 15 * 60 * 1000; // 15 Mins
 const SOFT_REFRESH_MS = 12 * 60 * 1000;    // 12 Mins
@@ -201,7 +201,8 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
         while (attempts < MAX_ATTEMPTS && !success && !hitRateLimit) {
             attempts++;
             try {
-                const res = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}&price_change_percentage=24h`, config);
+                // UPDATE: Added '7d,30d,1y' to price_change_percentage
+                const res = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}&price_change_percentage=24h,7d,30d,1y`, config);
                 
                 if (res.status === 429) {
                     if (attempts >= MAX_ATTEMPTS) {
@@ -247,15 +248,19 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
 
     const valid = allCoins.filter(c => c && c.price_change_percentage_24h != null && c.symbol && c.current_price != null);
     
-    // Format Data (INCLUDES IMAGE NOW)
+    // Format Data (UPDATED TO INCLUDE VOLUME AND HISTORY)
     const formatCoin = (coin) => ({
         id: coin.id,
         symbol: coin.symbol,
         name: coin.name,
-        image: coin.image, // <--- Crucial Fix
+        image: coin.image, 
         current_price: coin.current_price,
+        market_cap: coin.market_cap,
+        total_volume: coin.total_volume, // Added Volume
         price_change_percentage_24h: coin.price_change_percentage_24h,
-        market_cap: coin.market_cap
+        price_change_percentage_7d: coin.price_change_percentage_7d_in_currency, // Added 7d
+        price_change_percentage_30d: coin.price_change_percentage_30d_in_currency, // Added 30d
+        price_change_percentage_1y: coin.price_change_percentage_1y_in_currency // Added 1y
     });
 
     const gainers = [...valid].sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h).slice(0, 50).map(formatCoin);

@@ -115,7 +115,57 @@
             </div>
         </footer>
     </main>
+<!-- Overlay Modal -->
+<div id="coin-modal" class="modal-overlay">
+    <div class="modal-content">
+        <button class="close-modal" onclick="closeModal()">&times;</button>
+        
+        <div class="modal-header">
+            <img id="m-img" src="" alt="">
+            <div>
+                <h2 id="m-name">Bitcoin</h2>
+                <span id="m-symbol">BTC</span>
+            </div>
+            <div id="m-price" class="modal-price">$0.00</div>
+        </div>
 
+        <div class="modal-grid">
+            <div class="stat-box">
+                <span class="label">Market Cap</span>
+                <span class="value" id="m-cap">$0</span>
+            </div>
+            <div class="stat-box">
+                <span class="label">24h Volume</span>
+                <span class="value" id="m-vol">$0</span>
+            </div>
+        </div>
+
+        <div class="modal-history">
+            <h3>Price Performance</h3>
+            <div class="history-row">
+                <span>24h</span> <span id="m-24h" class="percent-tag">0%</span>
+            </div>
+            <div class="history-row">
+                <span>7d</span> <span id="m-7d" class="percent-tag">0%</span>
+            </div>
+            <div class="history-row">
+                <span>30d</span> <span id="m-30d" class="percent-tag">0%</span>
+            </div>
+             <div class="history-row">
+                <span>1y</span> <span id="m-1y" class="percent-tag">0%</span>
+            </div>
+        </div>
+
+        <div class="modal-actions">
+            <a id="m-link-cg" href="#" target="_blank" class="action-btn cg-btn">
+                <img src="https://static.coingecko.com/s/thumbnail-d5a7c1b36c2a477a2236e371d30d584.png" width="20"> CoinGecko
+            </a>
+            <a id="m-link-tv" href="#" target="_blank" class="action-btn tv-btn">
+                <i class="fas fa-chart-line"></i> TradingView
+            </a>
+        </div>
+    </div>
+</div>
     <script src="script.js"></script>
 </body>
 </html>

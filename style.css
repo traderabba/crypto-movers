@@ -237,6 +237,10 @@ footer {
         .option-text h4 { margin: 0; font-size: 16px; color: #1e293b; font-weight: 700; }
         .option-text p { margin: 2px 0 0; font-size: 13px; color: #64748b; }
 
+/* --- X LOGO FORCED UPDATE --- */
+.fa.fa-twitter	{font-family:sans-serif; }
+.fa.fa-twitter::before{ content:"𝕏"; font-size:1.2em; }
+
 /* --- MOBILE RESPONSIVE --- */
 @media (max-width: 768px) {
     .menu-toggle { display: block; margin-left: auto; /* Force Right */ }

@@ -12,8 +12,7 @@ const LOCK_TIMEOUT_MS = 120000;
 // === EXCLUSION FILES ===
 const EXCLUSION_FILES = [
     "/exclusions/stablecoins-exclusion-list.json",
-    "/exclusions/wrapped-tokens-exclusion-list.json",
-    "/exclusions/rewards-tokens-exclusion-list.json"
+    "/exclusions/wrapped-tokens-exclusion-list.json"
 ];
 
 const HEADERS = {

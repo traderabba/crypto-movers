@@ -1,12 +1,11 @@
-// common.js
-// Universal UI Logic: Menu, Modals, and Smart Snapshots
+// Universal UI Logic
 
 document.addEventListener('DOMContentLoaded', () => {
     setupMenu();
     setupModalClosers();
 });
 
-// 1. MENU LOGIC
+// MENU LOGIC
 function setupMenu() {
     const hamburger = document.getElementById('mobile-menu');
     const navMenu = document.querySelector('.nav-menu');
@@ -40,24 +39,40 @@ function setupMenu() {
     }
 }
 
-// 2. MODAL LOGIC
+// MODAL LOGIC
 function setupModalClosers() {
     const modal = document.getElementById('coin-modal');
+    const closeBtn = document.querySelector('.close-modal'); 
+
+    // Click the "X" Button
+    if (closeBtn) {
+        closeBtn.onclick = function() {
+            closeModal();
+        }
+    }
+
+    // Click Outsie
     if (modal) {
-        window.addEventListener('click', (e) => {
-            if (e.target === modal) document.getElementById('coin-modal').classList.remove('active');
-        });
+        window.onclick = function(event) {
+           
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+        
+        // C. Escape Key Support (Bonus accessibility)
         window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') document.getElementById('coin-modal').classList.remove('active');
+            if (e.key === 'Escape') closeModal();
         });
     }
 }
 
 function closeModal() {
-    document.getElementById('coin-modal').classList.remove('active');
+    const modal = document.getElementById('coin-modal');
+    if(modal) modal.classList.remove('active');
 }
 
-// 3. SNAPSHOT LOGIC
+// SNAPSHOT LOGIC
 async function captureSection(type) {
     const btn = document.getElementById(type === 'gainers' ? 'btn-gain' : 'btn-lose');
     if (!btn) return;
@@ -71,9 +86,8 @@ async function captureSection(type) {
     const count = listElement.children.length;
 
     // --- SMART TITLE DETECTION ---
-   
     const isDexPage = window.location.pathname.includes('dex-movers');
-    const pageLabel = isDexPage ? 'DEX' : 'Crypto'; // "Top DEX Gainers" vs "Top Crypto Gainers"
+    const pageLabel = isDexPage ? 'DEX' : 'Crypto';
     
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating HD...';
     btn.disabled = true;
@@ -128,7 +142,7 @@ async function captureSection(type) {
 
         reportCard.appendChild(gridContainer);
         
-        // --- SNAP FOOTER ---
+        // FOOTER
         reportCard.insertAdjacentHTML('beforeend', `
             <div style="font-size: 18px; color: #64748b; font-weight: 600; margin-top: 30px; display:flex; align-items:center; gap:10px;">
                 <img src="/images/bullish.png" style="width:30px;">

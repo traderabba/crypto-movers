@@ -1,4 +1,4 @@
-// Logic for Index.html (CEX Data) - Fixed Modal Interaction
+// Logic for Index.html (CEX Data)
 
 let globalMarketData = null;
 
@@ -59,7 +59,7 @@ function updateDisplay(limit) {
 
     // Helper to generate the bubble HTML with the Click Event
     const createBubble = (c, colorClass) => {
-        // We must serialize the data safely to pass it into the onclick function
+        // PATCH: Map keys correctly to match Worker output (removed _in_currency)
         const safeCoin = {
             name: c.name,
             symbol: c.symbol,
@@ -68,8 +68,9 @@ function updateDisplay(limit) {
             market_cap: c.market_cap,
             total_volume: c.total_volume,
             price_change_percentage_24h: c.price_change_percentage_24h,
-            price_change_percentage_7d: c.price_change_percentage_7d_in_currency, 
-            price_change_percentage_30d: c.price_change_percentage_30d_in_currency,
+            price_change_percentage_7d: c.price_change_percentage_7d, // Fixed key
+            price_change_percentage_30d: c.price_change_percentage_30d, // Fixed key
+            price_change_percentage_1y: c.price_change_percentage_1y, // Added 1y
             id: c.id
         };
         
@@ -127,42 +128,37 @@ function openHomeModal(coin) {
     document.getElementById('m-cap').innerText = formatMoney(coin.market_cap);
     document.getElementById('m-vol').innerText = formatMoney(coin.total_volume);
 
-    // 3. History (24h, 7d, 30d)
-    const historySection = document.querySelector('.modal-history');
-    if(historySection) {
-        historySection.innerHTML = `
-            <h3>Price Performance</h3>
-            <div class="history-row"><span>24h</span> <span id="m-24h" class="percent-tag"></span></div>
-            <div class="history-row"><span>7d</span> <span id="m-7d" class="percent-tag"></span></div>
-            <div class="history-row"><span>30d</span> <span id="m-30d" class="percent-tag"></span></div>`;
-    }
-
+    // 3. History (24h, 7d, 30d, 1y) - PATCHED
     const setPercent = (id, val) => {
         const el = document.getElementById(id);
-        if(el && val !== undefined && val !== null) {
-            el.innerText = val.toFixed(2) + "%";
-            el.className = `percent-tag ${val >= 0 ? 'green' : 'red'}`;
-        } else if (el) {
+        if(!el) return;
+
+        if(val !== undefined && val !== null) {
+            el.innerText = (val > 0 ? '+' : '') + val.toFixed(2) + "%";
+            // Remove old classes first to prevent conflicts
+            el.classList.remove('green', 'red', 'gray');
+            el.classList.add(val >= 0 ? 'green' : 'red');
+        } else {
             el.innerText = "-";
-            el.className = "percent-tag gray";
+            el.classList.remove('green', 'red');
+            el.classList.add('gray');
         }
     };
 
     setPercent('m-24h', coin.price_change_percentage_24h);
     setPercent('m-7d', coin.price_change_percentage_7d);
     setPercent('m-30d', coin.price_change_percentage_30d);
+    setPercent('m-1y', coin.price_change_percentage_1y); // PATCHED: Added 1y
 
     // 4. Action Buttons
-    const cgBtn = document.getElementById('m-link-cg'); // Ensure this ID exists in your HTML or use class selector
     const actionContainer = document.querySelector('.modal-actions');
     
-    // Rebuild buttons to ensure they are correct for CEX
     if(actionContainer) {
         actionContainer.innerHTML = `
             <a href="https://www.coingecko.com/en/coins/${coin.id}" target="_blank" class="action-btn cg-btn">
                 <i class="fas fa-coins"></i> CoinGecko
             </a>
-            <a href="https://www.tradingview.com/symbols/${coin.symbol.toUpperCase()}USD/?exchange=CRYPTO" target="_blank" class="action-btn tv-btn">
+            <a href="https://www.tradingview.com/chart/?symbol=${coin.symbol.toUpperCase()}USD" target="_blank" class="action-btn tv-btn">
                 <i class="fas fa-chart-line"></i> TradingView
             </a>
         `;

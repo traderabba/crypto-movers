@@ -36,8 +36,27 @@ async function fetchDexData() {
         // Fetch from Worker with Network Param
         const response = await fetch(`/api/dex-stats?network=${currentNetwork}&t=` + Date.now());
         
-        if (!response.ok) throw new Error("Failed to load DEX data");
+        // === UPDATED ERROR HANDLING START ===
+        if (!response.ok) {
+            let errorMsg = `Server Error (${response.status})`;
+            try {
+                // Try to parse the specific JSON error from the worker
+                const errJson = await response.json();
+                if (errJson.message) errorMsg = errJson.message;
+                else if (errJson.error) errorMsg = errJson.error;
+            } catch (jsonErr) {
+                // If JSON fails, read text (useful for 404/500 html errors)
+                const text = await response.text();
+                if (text) errorMsg = `Server Error: ${text.substring(0, 50)}...`;
+            }
+            throw new Error(errorMsg);
+        }
+        // === UPDATED ERROR HANDLING END ===
+
         const data = await response.json();
+        
+        // Handle logical errors inside a 200 OK response
+        if (data.error) throw new Error(data.message || "Unknown API Error");
 
         globalDexData = data;
         updateDexDisplay();
@@ -48,8 +67,9 @@ async function fetchDexData() {
              loader.innerHTML = `
                 <div style="text-align:center; padding:20px;">
                     <h3 style="color:#ef4444">⚠️ Connection Failed</h3>
-                    <p style="color:#64748b; margin:10px 0;">${e.message}</p>
-                    <button onclick="location.reload()" style="padding:10px 20px; background:#3b82f6; color:white; border:none; border-radius:8px;">Retry</button>
+                    <p style="color:#e2e8f0; margin:10px auto; font-family:monospace; background:#1e293b; padding:10px; border-radius:5px; max-width: 90%; word-break: break-word;">${e.message}</p>
+                    <button onclick="location.reload()" style="padding:10px 20px; background:#3b82f6; color:white; border:none; border-radius:8px; cursor:pointer;">Retry</button>
+                    <div style="margin-top:10px; font-size:12px; color:#94a3b8;">Check Console (F12) for details</div>
                 </div>`;
         }
     }

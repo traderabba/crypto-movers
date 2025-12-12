@@ -10,7 +10,7 @@ const CEX_RETRY_DELAY_MS = 2 * 60 * 1000;
 const TIMEOUT_MS = 45000; 
 
 // --- DEX TIMERS ---
-const DEX_CACHE_KEY = "dex_data_v8";       
+const DEX_CACHE_KEY = "dex_data_v10";     
 const DEX_LOCK_KEY = "dex_data_lock";
 const NETWORKS_CACHE_KEY = "dex_networks_map"; // Cache for valid slugs          
 const DEX_SOFT_REFRESH_MS = 18 * 60 * 1000;    
@@ -126,7 +126,7 @@ async function handleCexStats(request, env, ctx) {
 }
 
 // ==========================================
-// 2. DEX HANDLER (CMC Logic - Auto Detecting)
+// 2. DEX HANDLER (CMC Logic)
 // ==========================================
 async function handleDexStats(request, env, ctx) {
     const url = new URL(request.url);
@@ -153,11 +153,18 @@ async function handleDexStats(request, env, ctx) {
 
         // Filter Logic
         const filterResponse = (fullData, source) => {
-            const mappings = { "solana": "Solana", "eth": "Ethereum", "bsc": "BNB Smart Chain (BEP20)", "base": "Base" };
+            const mappings = { "solana": "solana", "eth": "ethereum", "bsc": "bsc", "base": "base" };
             const target = mappings[requestedNetwork];
             
             let pairs = fullData.pairs || [];
-            if (target) pairs = pairs.filter(p => p.platform === target || p.platform.includes(target));
+            if (target) {
+                // Fuzzy match platform slug or name
+                pairs = pairs.filter(p => {
+                    const pSlug = (p.platform?.slug || "").toLowerCase();
+                    const pName = (p.platform?.name || "").toLowerCase();
+                    return pSlug.includes(target) || pName.includes(target);
+                });
+            }
 
             const gainers = [...pairs].sort((a, b) => b.change_24h - a.change_24h).slice(0, 20);
             const losers = [...pairs].sort((a, b) => a.change_24h - b.change_24h).slice(0, 20);
@@ -204,59 +211,21 @@ async function handleDexStats(request, env, ctx) {
     }
 }
 
-// === SELF-HEALING: NETWORK SLUG DISCOVERY ===
-async function getNetworkSlugsString(env) {
-    const cached = await env.KV_STORE.get(NETWORKS_CACHE_KEY);
-    if(cached) return cached;
-
-    try {
-        // Ask CMC for the official list of networks
-        const res = await fetch('https://pro-api.coinmarketcap.com/v4/dex/networks/list', {
-            headers: { 'X-CMC_PRO_API_KEY': env.CMC_PRO_API_KEY }
-        });
-        
-        if(!res.ok) throw new Error("Failed to fetch networks");
-        
-        const json = await res.json();
-        const networks = json.data || [];
-        const foundSlugs = [];
-
-        networks.forEach(n => {
-            const name = n.name.toLowerCase();
-            const slug = n.network_slug;
-            // Fuzzy match the names to find the official slugs
-            if (name.includes("ethereum") || name.includes("bnb") || name.includes("solana") || name.includes("base") || name.includes("binance")) {
-                if(slug) foundSlugs.push(slug);
-            }
-        });
-
-        const finalString = foundSlugs.length > 0 ? foundSlugs.join(',') : "ethereum,solana,bnb,base";
-        await env.KV_STORE.put(NETWORKS_CACHE_KEY, finalString, { expirationTtl: 86400 }); // Save for 24h
-        return finalString;
-
-    } catch(e) {
-        console.error("Network Discovery Failed:", e);
-        return "ethereum,solana,bnb,base"; // Fallback
-    }
-}
-
-// === CMC FETCH FUNCTION (AUTO-DETECTED SLUGS) ===
+// === CMC FETCH FUNCTION (NO NETWORK PARAMS - PURE GLOBAL FETCH) ===
 async function fetchCMC_DEX(env) {
     const apiKey = env.CMC_PRO_API_KEY;
     const exclusionSet = await getExclusions(env);
     
-    // 1. GET CORRECT SLUGS DYNAMICALLY
-    const networkSlugs = await getNetworkSlugsString(env);
-
-    // 2. Fetch 3 Pages
-    const PAGES_TO_FETCH = 3; 
+    // FETCH 4 PAGES (400 TOKENS) TO ENSURE WE GET ENOUGH AFTER FILTERING
+    const PAGES_TO_FETCH = 4; 
     let allPairs = [];
     let nextScrollId = null;
 
     for (let i = 0; i < PAGES_TO_FETCH; i++) {
         try {
-            // Updated Params: sort=percent_change_24h, liquidity_min=20000
-            let url = `https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&network_slug=${networkSlugs}&liquidity_min=20000`;
+            // FIX: REMOVED 'network_slug' PARAMETER COMPLETELY.
+            // We fetch Global Top Gainers, then filter in the loop below.
+            let url = `https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&liquidity_min=20000`;
             
             if (nextScrollId) {
                 url += `&scroll_id=${nextScrollId}`;
@@ -290,16 +259,30 @@ async function fetchCMC_DEX(env) {
         }
     }
 
-    // 3. APPLY FILTERS (Honeypot/Trash Filter)
+    // === FILTERING LOGIC (The "Safety Filter") ===
     const filteredRaw = allPairs.filter(p => {
+        // 1. Network Check (Since we fetched global, we must remove weird chains)
+        // We accept: Ethereum, BSC (BNB), Solana, Base
+        const pName = (p.platform?.name || "").toLowerCase();
+        const pSlug = (p.platform?.slug || "").toLowerCase();
+        
+        const isTargetChain = 
+            pName.includes("ethereum") || pSlug.includes("ethereum") ||
+            pName.includes("bnb") || pSlug.includes("bsc") || pSlug.includes("binance") ||
+            pName.includes("solana") || pSlug.includes("solana") ||
+            pName.includes("base") || pSlug.includes("base");
+
+        if (!isTargetChain) return false;
+
+        // 2. Exclusions
         const symbol = p.base_asset_symbol || "";
         if (exclusionSet.has(symbol.toLowerCase())) return false;
         
-        // Liquidity Check (Double confirm)
+        // 3. Liquidity Check (API did this, but double check)
         const liquidity = parseFloat(p.liquidity || 0);
         if (liquidity < 20000) return false;
 
-        // FAKE MC Trap: MC > 3M but Liquidity < 150k
+        // 4. FAKE MC Trap: MC > 3M but Liquidity < 150k
         const mc = parseFloat(p.fully_diluted_value || p.market_cap || 0);
         if (mc > 3000000 && liquidity < 150000) return false;
 
@@ -327,7 +310,7 @@ async function fetchCMC_DEX(env) {
         name: p.base_asset_name,
         symbol: p.base_asset_symbol,
         contract: p.base_asset_contract_address,
-        platform: p.platform ? p.platform.name : "Unknown",
+        platform: { name: p.platform?.name, slug: p.platform?.slug }, // Save slug for filtering later
         price: p.price,
         change_24h: p.percent_change_24h,
         volume_24h: p.volume_24h,

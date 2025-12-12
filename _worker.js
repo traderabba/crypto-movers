@@ -10,8 +10,9 @@ const CEX_RETRY_DELAY_MS = 2 * 60 * 1000;
 const TIMEOUT_MS = 45000; 
 
 // --- DEX TIMERS ---
-const DEX_CACHE_KEY = "dex_data_v6"; // Bump version      
-const DEX_LOCK_KEY = "dex_data_lock";          
+const DEX_CACHE_KEY = "dex_data_v7"; // Version bump      
+const DEX_LOCK_KEY = "dex_data_lock";
+const NETWORKS_CACHE_KEY = "dex_networks_map"; // Cache for network slugs          
 const DEX_SOFT_REFRESH_MS = 18 * 60 * 1000;    
 const DEX_LOCK_TIMEOUT_MS = 120000;            
 
@@ -86,15 +87,12 @@ async function handleCexStats(request, env, ctx) {
 
         const isUpdating = lock && (now - parseInt(lock)) < DEX_LOCK_TIMEOUT_MS;
 
-        // Fresh -> Serve
         if (cachedData && dataAge < CEX_SOFT_REFRESH_MS) {
             return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-Fresh" } });
         }
-        // Updating -> Serve Stale
         if (isUpdating && cachedData) {
             return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-UpdateInProgress" } });
         }
-        // Stale -> Background Update
         if (cachedData && dataAge >= CEX_SOFT_REFRESH_MS) {
             const lastAttemptAge = now - (cachedData.lastUpdateAttempt || 0);
             if (lastAttemptAge >= CEX_RETRY_DELAY_MS) {
@@ -105,7 +103,6 @@ async function handleCexStats(request, env, ctx) {
             return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-RateLimited" } });
         }
 
-        // Empty -> Blocking Fetch
         await env.KV_STORE.put(CACHE_LOCK_KEY, now.toString(), { expirationTtl: 120 });
         try {
             const freshJson = await fetchWithTimeout(env, false);
@@ -148,13 +145,13 @@ async function handleDexStats(request, env, ctx) {
 
         const isUpdating = lock && (now - parseInt(lock)) < DEX_LOCK_TIMEOUT_MS;
 
-        // Filtering Function
+        // Filter Logic
         const filterResponse = (fullData, source) => {
             const mappings = { "solana": "Solana", "eth": "Ethereum", "bsc": "BNB Smart Chain (BEP20)", "base": "Base" };
             const target = mappings[requestedNetwork];
             
             let pairs = fullData.pairs || [];
-            if (target) pairs = pairs.filter(p => p.platform === target);
+            if (target) pairs = pairs.filter(p => p.platform === target || p.platform.includes(target));
 
             const gainers = [...pairs].sort((a, b) => b.change_24h - a.change_24h).slice(0, 20);
             const losers = [...pairs].sort((a, b) => a.change_24h - b.change_24h).slice(0, 20);
@@ -167,17 +164,12 @@ async function handleDexStats(request, env, ctx) {
             }), { headers: { ...HEADERS, "X-Source": source } });
         };
 
-        // 1. Fresh Data ( < 18 Mins )
         if (dexData && dataAge < DEX_SOFT_REFRESH_MS) {
             return filterResponse(dexData, "Cache-Fresh");
         }
-
-        // 2. Update In Progress
         if (isUpdating && dexData) {
             return filterResponse(dexData, "Cache-UpdateInProgress");
         }
-
-        // 3. Stale ( > 18 Mins ) -> Trigger Background Update
         if (dexData && dataAge >= DEX_SOFT_REFRESH_MS) {
             await env.KV_STORE.put(DEX_LOCK_KEY, now.toString(), { expirationTtl: 120 });
             ctx.waitUntil(
@@ -189,7 +181,7 @@ async function handleDexStats(request, env, ctx) {
             return filterResponse(dexData, "Cache-Proactive"); 
         }
 
-        // 4. No Data -> Blocking Fetch
+        // Blocking Fetch
         await env.KV_STORE.put(DEX_LOCK_KEY, now.toString(), { expirationTtl: 120 });
         try {
             const freshData = await fetchCMC_DEX(env);
@@ -207,21 +199,66 @@ async function handleDexStats(request, env, ctx) {
     }
 }
 
-// === CMC FETCH FUNCTION (FIXED SLUGS & FILTERS) ===
+// === NEW: NETWORK SLUG DISCOVERY ===
+async function getNetworkSlugsString(env) {
+    // 1. Check Cache
+    const cached = await env.KV_STORE.get(NETWORKS_CACHE_KEY);
+    if(cached) return cached;
+
+    // 2. Fetch from CMC
+    try {
+        const res = await fetch('https://pro-api.coinmarketcap.com/v4/dex/networks/list', {
+            headers: { 'X-CMC_PRO_API_KEY': env.CMC_PRO_API_KEY }
+        });
+        
+        if(!res.ok) throw new Error("Failed to fetch networks");
+        
+        const json = await res.json();
+        const networks = json.data || [];
+        
+        // Find our target slugs
+        const targetNames = ["Ethereum", "BNB", "Solana", "Base"];
+        const foundSlugs = [];
+
+        networks.forEach(n => {
+            // Check if name matches any target (Case insensitive check)
+            const name = n.name.toLowerCase();
+            const slug = n.network_slug;
+            
+            if (name.includes("ethereum") || name.includes("bnb") || name.includes("solana") || name.includes("base") || name.includes("binance")) {
+                if(slug) foundSlugs.push(slug);
+            }
+        });
+
+        // Ensure we at least have safe defaults if detection fails slightly
+        const finalString = foundSlugs.length > 0 ? foundSlugs.join(',') : "ethereum,solana,bnb,base";
+        
+        // Cache for 24 Hours
+        await env.KV_STORE.put(NETWORKS_CACHE_KEY, finalString, { expirationTtl: 86400 });
+        return finalString;
+
+    } catch(e) {
+        console.error("Network Discovery Failed:", e);
+        return "ethereum,solana,bnb,base"; // Fallback
+    }
+}
+
+// === CMC FETCH FUNCTION (AUTO-DETECTED SLUGS) ===
 async function fetchCMC_DEX(env) {
     const apiKey = env.CMC_PRO_API_KEY;
     const exclusionSet = await getExclusions(env);
     
-    // Fetch 3 pages to catch enough valid tokens after filtering
+    // 1. GET CORRECT NETWORK SLUGS DYNAMICALLY
+    const networkSlugs = await getNetworkSlugsString(env);
+    console.log("Using Network Slugs:", networkSlugs);
+
     const PAGES_TO_FETCH = 3; 
     let allPairs = [];
     let nextScrollId = null;
 
     for (let i = 0; i < PAGES_TO_FETCH; i++) {
         try {
-            // FIXED: 'bnb' instead of 'bsc'. 
-            // FILTERS: sort=percent_change_24h, liquidity_min=20000
-            let url = 'https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&network_slug=ethereum,solana,bnb,base&liquidity_min=20000';
+            let url = `https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&network_slug=${networkSlugs}&liquidity_min=20000`;
             
             if (nextScrollId) {
                 url += `&scroll_id=${nextScrollId}`;
@@ -250,7 +287,6 @@ async function fetchCMC_DEX(env) {
             if (pairs.length === 0) break;
 
             allPairs = allPairs.concat(pairs);
-            
             nextScrollId = dexJson.status?.scroll_id || dexJson.scroll_id; 
             if (!nextScrollId) break; 
 
@@ -261,17 +297,16 @@ async function fetchCMC_DEX(env) {
         }
     }
 
-    // FILTERING LOGIC
+    // 2. FILTERING LOGIC (With FAKE MC Trap)
     const filteredRaw = allPairs.filter(p => {
         const symbol = p.base_asset_symbol || "";
         if (exclusionSet.has(symbol.toLowerCase())) return false;
         
-        // 1. Confirm Base Liquidity (20k)
+        // Liquidity Check > 20k
         const liquidity = parseFloat(p.liquidity || 0);
         if (liquidity < 20000) return false;
 
-        // 2. === FAKE MC FILTER ===
-        // If MC > 3M but Liquidity < 150k -> Trash/Honeypot
+        // FAKE MC Trap: MC > 3M but Liq < 150k
         const mc = parseFloat(p.fully_diluted_value || p.market_cap || 0);
         if (mc > 3000000 && liquidity < 150000) return false;
 
@@ -359,6 +394,7 @@ async function fetchWithTimeout(env, isDeepScan) {
     }
 }
 
+// === CEX FETCH LOGIC ===
 async function updateMarketData(env, existingData, isDeepScan, signal = null) {
     const perPage = 250; 
     let allCoins = [];

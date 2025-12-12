@@ -10,7 +10,7 @@ const CEX_RETRY_DELAY_MS = 2 * 60 * 1000;
 const TIMEOUT_MS = 45000; 
 
 // --- DEX TIMERS ---
-const DEX_CACHE_KEY = "dex_data_v5"; // Version bump for new filter    
+const DEX_CACHE_KEY = "dex_data_v6"; // Bump version      
 const DEX_LOCK_KEY = "dex_data_lock";          
 const DEX_SOFT_REFRESH_MS = 18 * 60 * 1000;    
 const DEX_LOCK_TIMEOUT_MS = 120000;            
@@ -207,20 +207,21 @@ async function handleDexStats(request, env, ctx) {
     }
 }
 
-// === CMC FETCH FUNCTION (SMART GAINER STRATEGY) ===
+// === CMC FETCH FUNCTION (FIXED SLUGS & FILTERS) ===
 async function fetchCMC_DEX(env) {
     const apiKey = env.CMC_PRO_API_KEY;
     const exclusionSet = await getExclusions(env);
     
-    // We fetch 3 pages to get enough candidates
+    // Fetch 3 pages to catch enough valid tokens after filtering
     const PAGES_TO_FETCH = 3; 
     let allPairs = [];
     let nextScrollId = null;
 
     for (let i = 0; i < PAGES_TO_FETCH; i++) {
         try {
-            // UPDATED: liquidity_min=20000 (Base Requirement)
-            let url = 'https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&network_slug=ethereum,solana,bsc,base&liquidity_min=20000';
+            // FIXED: 'bnb' instead of 'bsc'. 
+            // FILTERS: sort=percent_change_24h, liquidity_min=20000
+            let url = 'https://pro-api.coinmarketcap.com/v4/dex/spot-pairs/latest?limit=100&sort=percent_change_24h&sort_dir=desc&network_slug=ethereum,solana,bnb,base&liquidity_min=20000';
             
             if (nextScrollId) {
                 url += `&scroll_id=${nextScrollId}`;
@@ -233,7 +234,12 @@ async function fetchCMC_DEX(env) {
             if (!dexRes.ok) {
                  if(i===0) {
                      const txt = await dexRes.text();
-                     throw new Error(`CMC API Error: ${txt}`);
+                     try {
+                        const errObj = JSON.parse(txt);
+                        throw new Error(`CMC Error: ${errObj.status?.error_message || txt}`);
+                     } catch(e) {
+                        throw new Error(`CMC Error: ${txt}`);
+                     }
                  }
                  break; 
             }
@@ -265,7 +271,7 @@ async function fetchCMC_DEX(env) {
         if (liquidity < 20000) return false;
 
         // 2. === FAKE MC FILTER ===
-        // If MC > 3M but Liquidity < 150k -> Trash
+        // If MC > 3M but Liquidity < 150k -> Trash/Honeypot
         const mc = parseFloat(p.fully_diluted_value || p.market_cap || 0);
         if (mc > 3000000 && liquidity < 150000) return false;
 

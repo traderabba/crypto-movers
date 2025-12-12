@@ -1,7 +1,7 @@
 // _worker.js
 
 // === CONFIGURATION ===
-const CACHE_KEY = "market_data_v8"; // Verified Version
+const CACHE_KEY = "market_data_v8"; 
 const CACHE_LOCK_KEY = "market_data_lock";
 
 // --- CEX TIMERS ---
@@ -10,7 +10,7 @@ const CEX_RETRY_DELAY_MS = 2 * 60 * 1000;
 const TIMEOUT_MS = 45000; 
 
 // --- DEX TIMERS ---
-const DEX_CACHE_KEY = "dex_data_v8";           
+const DEX_CACHE_KEY = "dex_data_v8";       
 const DEX_LOCK_KEY = "dex_data_lock";
 const NETWORKS_CACHE_KEY = "dex_networks_map"; // Cache for valid slugs          
 const DEX_SOFT_REFRESH_MS = 18 * 60 * 1000;    
@@ -187,6 +187,7 @@ async function handleDexStats(request, env, ctx) {
             return filterResponse(dexData, "Cache-Proactive"); 
         }
 
+        // Blocking Fetch
         await env.KV_STORE.put(DEX_LOCK_KEY, now.toString(), { expirationTtl: 120 });
         try {
             const freshData = await fetchCMC_DEX(env);

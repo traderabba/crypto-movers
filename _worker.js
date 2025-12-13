@@ -1,33 +1,36 @@
 // _worker.js
 
 // =================================================================================
-// PART 1: ROUTING LOGIC (THE ONLY NEW PART)
+// PART 1: ROUTING LOGIC (TRAFFIC CONTROLLER)
 // =================================================================================
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
         
         // --- ROUTING DECISION ---
-        // We check the "Referer" header to see if the request is coming from the Dex Movers page.
+        // We check the "Referer" header. 
+        // User confirmed the URL comes through as ".../dex-movers" (no .html)
         const referer = (request.headers.get("Referer") || "").toLowerCase();
-        const isDexPage = referer.includes("dex") || referer.includes("movers.html"); // broadened check
+        
+        // This check detects if the user is currently on the Dex Movers page
+        const isDexPage = referer.includes("dex-movers");
         
         // 1. IMAGE PROXY -> Always Dex Logic
         if (url.pathname === "/api/image-proxy") {
             return handleDexImageProxy(request, env, url);
         }
 
-        // 2. STATS API -> Check if it's for Dex or Primary
+        // 2. STATS API -> Router
         if (url.pathname === "/api/stats") {
-            // If explicit network param exists OR if calling from dex-movers page:
-            if (url.searchParams.has("network") || isDexPage) {
-                // If no network param but isDexPage is true, we default to solana manually here
-                // to match the original Dex worker behavior.
+            // IF: Calling from "dex-movers" OR asking for specific network
+            if (isDexPage || url.searchParams.has("network")) {
+                // If it is the Dex Page but no network is specified, 
+                // we FORCE the default to 'solana' to stop the spinner.
                 const network = url.searchParams.get("network") || "solana";
                 return handleDexStatsWithCache(request, env, ctx, network);
             }
             
-            // Otherwise -> Primary Logic (Main Homepage)
+            // ELSE: Homepage / Main Site -> FORCE PRIMARY LOGIC
             return handlePrimaryStats(request, env, ctx);
         }
 
@@ -43,8 +46,8 @@ export default {
 
 
 // =================================================================================
-// PART 2: PRIMARY WORKER LOGIC (COINGECKO / CEX)
-// Copied from "_worker primary.js" - variables renamed ONLY to avoid collision
+// PART 2: PRIMARY LOGIC (COINGECKO / CEX)
+// Exact copy of "_worker primary.js" -> Variables prefixed with PRI_ to avoid conflict
 // =================================================================================
 
 const PRI_CACHE_KEY = "market_data_v7"; 
@@ -75,7 +78,8 @@ const PRI_API_HEADERS = {
     "Referer": "https://www.coingecko.com/"
 };
 
-// Primary Handlers
+// --- PRIMARY HANDLERS ---
+
 async function handlePrimarySitemap(request, env) {
     const baseUrl = "https://cryptomovers.pages.dev";
     const now = new Date().toISOString();
@@ -155,6 +159,8 @@ async function handlePrimaryStats(request, env, ctx) {
         return new Response(JSON.stringify({ error: true, message: err.message }), { status: 500, headers: PRI_HEADERS });
     }
 }
+
+// --- PRIMARY HELPERS ---
 
 async function getPrimaryExclusions(env) {
     const exclusionSet = new Set();
@@ -267,7 +273,7 @@ async function updatePrimaryMarketData(env, existingData, isDeepScan, signal = n
 
 // =================================================================================
 // PART 3: DEX MOVERS LOGIC (GECKOTERMINAL)
-// Copied from "_worker.js" - variables renamed ONLY to avoid collision
+// Exact copy of "_worker.js" -> Variables prefixed with DEX_ to avoid conflict
 // =================================================================================
 
 const DEX_HEADERS = {

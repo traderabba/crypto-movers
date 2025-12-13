@@ -1,22 +1,66 @@
 // _worker.js
 
-// ==============================================================================
-// 1. CONFIGURATION: PRIMARY (CEX / COINGECKO)
-// ==============================================================================
-const CACHE_KEY = "market_data_v7"; 
-const CACHE_LOCK_KEY = "market_data_lock";
-const UPDATE_INTERVAL_MS = 15 * 60 * 1000; 
-const SOFT_REFRESH_MS = 12 * 60 * 1000;    
-const MIN_RETRY_DELAY_MS = 2 * 60 * 1000;  
-const TIMEOUT_MS = 45000; 
-const LOCK_TIMEOUT_MS = 120000; 
+// =================================================================================
+// PART 1: ROUTING LOGIC (THE ONLY NEW PART)
+// =================================================================================
+export default {
+    async fetch(request, env, ctx) {
+        const url = new URL(request.url);
+        
+        // --- ROUTING DECISION ---
+        // We check the "Referer" header to see if the request is coming from the Dex Movers page.
+        const referer = (request.headers.get("Referer") || "").toLowerCase();
+        const isDexPage = referer.includes("dex") || referer.includes("movers.html"); // broadened check
+        
+        // 1. IMAGE PROXY -> Always Dex Logic
+        if (url.pathname === "/api/image-proxy") {
+            return handleDexImageProxy(request, env, url);
+        }
 
-const EXCLUSION_FILES = [
+        // 2. STATS API -> Check if it's for Dex or Primary
+        if (url.pathname === "/api/stats") {
+            // If explicit network param exists OR if calling from dex-movers page:
+            if (url.searchParams.has("network") || isDexPage) {
+                // If no network param but isDexPage is true, we default to solana manually here
+                // to match the original Dex worker behavior.
+                const network = url.searchParams.get("network") || "solana";
+                return handleDexStatsWithCache(request, env, ctx, network);
+            }
+            
+            // Otherwise -> Primary Logic (Main Homepage)
+            return handlePrimaryStats(request, env, ctx);
+        }
+
+        // 3. SITEMAP -> Primary Logic
+        if (url.pathname === "/sitemap.xml") {
+            return handlePrimarySitemap(request, env);
+        }
+
+        // 4. FALLBACK -> Static Assets
+        return env.ASSETS.fetch(request);
+    }
+};
+
+
+// =================================================================================
+// PART 2: PRIMARY WORKER LOGIC (COINGECKO / CEX)
+// Copied from "_worker primary.js" - variables renamed ONLY to avoid collision
+// =================================================================================
+
+const PRI_CACHE_KEY = "market_data_v7"; 
+const PRI_CACHE_LOCK_KEY = "market_data_lock";
+const PRI_UPDATE_INTERVAL_MS = 15 * 60 * 1000; 
+const PRI_SOFT_REFRESH_MS = 12 * 60 * 1000;    
+const PRI_MIN_RETRY_DELAY_MS = 2 * 60 * 1000;  
+const PRI_TIMEOUT_MS = 45000; 
+const PRI_LOCK_TIMEOUT_MS = 120000; 
+
+const PRI_EXCLUSION_FILES = [
     "/exclusions/stablecoins-exclusion-list.json",
     "/exclusions/wrapped-tokens-exclusion-list.json"
 ];
 
-const PRIMARY_HEADERS = {
+const PRI_HEADERS = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
@@ -24,102 +68,25 @@ const PRIMARY_HEADERS = {
     "Expires": "0"
 };
 
-const API_HEADERS = {
+const PRI_API_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.coingecko.com/"
 };
 
-// ==============================================================================
-// 2. CONFIGURATION: DEX MOVERS (GECKOTERMINAL)
-// ==============================================================================
-const DEX_HEADERS = {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Cache-Control": "public, max-age=30", 
-};
-
-const DEX_KV_PREFIX = "dex_cache_";
-const DEX_IMG_PREFIX = "img_";
-const DEX_SOFT_REFRESH_MS = 4 * 60 * 1000;   // 4 Minutes
-const DEX_HARD_REFRESH_MS = 5 * 60 * 1000;   // 5 Minutes
-
-const DEX_NETWORK_MAP = {
-    'solana': 'solana',
-    'ethereum': 'eth',
-    'bnb': 'bsc',
-    'base': 'base'
-};
-
-// ==============================================================================
-// 3. MAIN WORKER LOGIC (ROUTER)
-// ==============================================================================
-export default {
-    async fetch(request, env, ctx) {
-        const url = new URL(request.url);
-        
-        // --- ROUTE A: DYNAMIC SITEMAP (Primary) ---
-        if (url.pathname === "/sitemap.xml") {
-            return handleSitemap(request, env);
-        }
-
-        // --- ROUTE B: API STATS (SHARED) ---
-        if (url.pathname === "/api/stats") {
-            // 1. Check if specific network requested (Manual Override from UI)
-            let network = url.searchParams.get("network");
-
-            // 2. INTELLIGENT ROUTING (The Fix)
-            // If no network is specified, check the Referer.
-            if (!network) {
-                const referer = (request.headers.get("Referer") || "").toLowerCase();
-                
-                // STRICT CHECK: If the user is on any page with "dex" in the URL (dex-movers.html),
-                // we force the default network to Solana so the spinner stops.
-                if (referer.includes("dex")) {
-                    network = "solana";
-                }
-            }
-
-            // 3. EXECUTE
-            if (network) {
-                // Request has network OR comes from dex-movers -> DEX DATA
-                return handleDexStatsWithCache(request, env, ctx, network);
-            } else {
-                // Request has no network AND comes from Homepage -> CEX DATA
-                return handlePrimaryStats(request, env, ctx);
-            }
-        }
-
-        // --- ROUTE C: IMAGE PROXY (Dex) ---
-        if (url.pathname === "/api/image-proxy") {
-            return handleImageProxy(request, env, url);
-        }
-
-        // --- FALLBACK: Static Assets ---
-        return env.ASSETS.fetch(request);
-    }
-};
-
-// ==============================================================================
-// 4. HANDLERS: PRIMARY (CEX / COINGECKO)
-// ==============================================================================
-
-async function handleSitemap(request, env) {
+// Primary Handlers
+async function handlePrimarySitemap(request, env) {
     const baseUrl = "https://cryptomovers.pages.dev";
     const now = new Date().toISOString();
-    
     try {
         const manifestRes = await env.ASSETS.fetch(new URL("/urls.json", request.url));
         if (!manifestRes.ok) return new Response("Error: urls.json not found", { status: 500 });
-
         const pages = await manifestRes.json();
         let sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`;
-
         pages.forEach(page => {
             sitemap += `\n  <url>\n    <loc>${baseUrl}${page.path}</loc>\n    <lastmod>${now}</lastmod>\n    <changefreq>${page.changefreq}</changefreq>\n    <priority>${page.priority}</priority>\n  </url>`;
         });
-
         sitemap += `\n</urlset>`;
         return new Response(sitemap, {
             headers: { "Content-Type": "application/xml", "Cache-Control": "no-cache, no-store, must-revalidate" }
@@ -130,12 +97,12 @@ async function handleSitemap(request, env) {
 }
 
 async function handlePrimaryStats(request, env, ctx) {
-    if (!env.KV_STORE) return new Response(JSON.stringify({ error: true, message: "KV_STORE binding missing" }), { status: 500, headers: PRIMARY_HEADERS });
+    if (!env.KV_STORE) return new Response(JSON.stringify({ error: true, message: "KV_STORE binding missing" }), { status: 500, headers: PRI_HEADERS });
 
     try {
         const [cachedRaw, lock] = await Promise.all([
-            env.KV_STORE.get(CACHE_KEY),
-            env.KV_STORE.get(CACHE_LOCK_KEY)
+            env.KV_STORE.get(PRI_CACHE_KEY),
+            env.KV_STORE.get(PRI_CACHE_LOCK_KEY)
         ]);
         
         let cachedData = null;
@@ -149,50 +116,50 @@ async function handlePrimaryStats(request, env, ctx) {
             } catch (e) { console.error("Cache corrupted:", e); }
         }
 
-        const isUpdating = lock && (now - parseInt(lock)) < LOCK_TIMEOUT_MS;
+        const isUpdating = lock && (now - parseInt(lock)) < PRI_LOCK_TIMEOUT_MS;
 
-        if (cachedData && dataAge < SOFT_REFRESH_MS) {
-            return new Response(cachedRaw, { headers: { ...PRIMARY_HEADERS, "X-Source": "Cache-Fresh" } });
+        if (cachedData && dataAge < PRI_SOFT_REFRESH_MS) {
+            return new Response(cachedRaw, { headers: { ...PRI_HEADERS, "X-Source": "Cache-Fresh" } });
         }
 
         if (isUpdating && cachedData) {
-            return new Response(cachedRaw, { headers: { ...PRIMARY_HEADERS, "X-Source": "Cache-UpdateInProgress" } });
+            return new Response(cachedRaw, { headers: { ...PRI_HEADERS, "X-Source": "Cache-UpdateInProgress" } });
         }
 
-        if (cachedData && dataAge >= SOFT_REFRESH_MS) {
+        if (cachedData && dataAge >= PRI_SOFT_REFRESH_MS) {
             const lastAttemptAge = now - (cachedData.lastUpdateAttempt || 0);
-            if (lastAttemptAge >= MIN_RETRY_DELAY_MS) {
+            if (lastAttemptAge >= PRI_MIN_RETRY_DELAY_MS) {
                 console.log("Triggering Background Update...");
-                await env.KV_STORE.put(CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(LOCK_TIMEOUT_MS / 1000) });
-                ctx.waitUntil(updateMarketDataSafe(env, cachedData, true).finally(() => env.KV_STORE.delete(CACHE_LOCK_KEY).catch(() => {})));
-                return new Response(cachedRaw, { headers: { ...PRIMARY_HEADERS, "X-Source": "Cache-Proactive", "X-Update-Triggered": "Deep-Scan" } });
+                await env.KV_STORE.put(PRI_CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(PRI_LOCK_TIMEOUT_MS / 1000) });
+                ctx.waitUntil(updatePrimaryMarketDataSafe(env, cachedData, true).finally(() => env.KV_STORE.delete(PRI_CACHE_LOCK_KEY).catch(() => {})));
+                return new Response(cachedRaw, { headers: { ...PRI_HEADERS, "X-Source": "Cache-Proactive", "X-Update-Triggered": "Deep-Scan" } });
             } else {
-                return new Response(cachedRaw, { headers: { ...PRIMARY_HEADERS, "X-Source": "Cache-RateLimited" } });
+                return new Response(cachedRaw, { headers: { ...PRI_HEADERS, "X-Source": "Cache-RateLimited" } });
             }
         }
 
         console.log("Cache empty. Starting Sprint...");
-        await env.KV_STORE.put(CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(LOCK_TIMEOUT_MS / 1000) });
+        await env.KV_STORE.put(PRI_CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(PRI_LOCK_TIMEOUT_MS / 1000) });
         
         try {
-            const freshJson = await fetchWithTimeout(env, false);
-            await env.KV_STORE.put(CACHE_KEY, freshJson, { expirationTtl: 172800 });
-            await env.KV_STORE.delete(CACHE_LOCK_KEY).catch(() => {});
-            return new Response(freshJson, { headers: { ...PRIMARY_HEADERS, "X-Source": "Live-Fetch-Sprint" } });
+            const freshJson = await fetchPrimaryWithTimeout(env, false);
+            await env.KV_STORE.put(PRI_CACHE_KEY, freshJson, { expirationTtl: 172800 });
+            await env.KV_STORE.delete(PRI_CACHE_LOCK_KEY).catch(() => {});
+            return new Response(freshJson, { headers: { ...PRI_HEADERS, "X-Source": "Live-Fetch-Sprint" } });
         } catch (error) {
-            await env.KV_STORE.delete(CACHE_LOCK_KEY).catch(() => {});
-            if (cachedData) return new Response(JSON.stringify(cachedData), { headers: { ...PRIMARY_HEADERS, "X-Source": "Cache-Fallback-Error" } });
+            await env.KV_STORE.delete(PRI_CACHE_LOCK_KEY).catch(() => {});
+            if (cachedData) return new Response(JSON.stringify(cachedData), { headers: { ...PRI_HEADERS, "X-Source": "Cache-Fallback-Error" } });
             throw error;
         }
     } catch (err) {
-        return new Response(JSON.stringify({ error: true, message: err.message }), { status: 500, headers: PRIMARY_HEADERS });
+        return new Response(JSON.stringify({ error: true, message: err.message }), { status: 500, headers: PRI_HEADERS });
     }
 }
 
-async function getExclusions(env) {
+async function getPrimaryExclusions(env) {
     const exclusionSet = new Set();
     const baseUrl = "http://placeholder"; 
-    await Promise.all(EXCLUSION_FILES.map(async (filePath) => {
+    await Promise.all(PRI_EXCLUSION_FILES.map(async (filePath) => {
         try {
             const res = await env.ASSETS.fetch(new URL(filePath, baseUrl));
             if (res.ok) {
@@ -204,15 +171,15 @@ async function getExclusions(env) {
     return exclusionSet;
 }
 
-async function updateMarketDataSafe(env, existingData, isDeepScan) {
-    try { await updateMarketData(env, existingData, isDeepScan); } catch (e) { console.error("Background update failed:", e); }
+async function updatePrimaryMarketDataSafe(env, existingData, isDeepScan) {
+    try { await updatePrimaryMarketData(env, existingData, isDeepScan); } catch (e) { console.error("Background update failed:", e); }
 }
 
-async function fetchWithTimeout(env, isDeepScan) {
+async function fetchPrimaryWithTimeout(env, isDeepScan) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timeoutId = setTimeout(() => controller.abort(), PRI_TIMEOUT_MS);
     try {
-        const result = await updateMarketData(env, null, isDeepScan, controller.signal);
+        const result = await updatePrimaryMarketData(env, null, isDeepScan, controller.signal);
         clearTimeout(timeoutId);
         return result;
     } catch (err) {
@@ -223,7 +190,7 @@ async function fetchWithTimeout(env, isDeepScan) {
     }
 }
 
-async function updateMarketData(env, existingData, isDeepScan, signal = null) {
+async function updatePrimaryMarketData(env, existingData, isDeepScan, signal = null) {
     const updateAttemptTime = Date.now();
     const pages = isDeepScan ? [1, 2, 3, 4, 5, 6] : [1];
     const perPage = 250; 
@@ -231,10 +198,10 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
     let hitRateLimit = false;
     let lastError = null;
     
-    const exclusionSet = await getExclusions(env);
+    const exclusionSet = await getPrimaryExclusions(env);
     console.log(`Loaded ${exclusionSet.size} exclusions.`);
 
-    const config = { headers: API_HEADERS };
+    const config = { headers: PRI_API_HEADERS };
     if (signal) config.signal = signal;
 
     for (const page of pages) {
@@ -267,7 +234,7 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
     if (allCoins.length === 0) {
         if (existingData) {
             const fallback = JSON.stringify({ ...existingData, lastUpdateAttempt: updateAttemptTime, lastUpdateFailed: true, lastError: lastError || "Fetch failed", timestamp: existingData.timestamp });
-            await env.KV_STORE.put(CACHE_KEY, fallback, { expirationTtl: 300 });
+            await env.KV_STORE.put(PRI_CACHE_KEY, fallback, { expirationTtl: 300 });
             return fallback;
         }
         throw new Error(`Market data unavailable: ${lastError}`);
@@ -293,15 +260,37 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
 
     const finalObject = { timestamp: Date.now(), lastUpdateAttempt: updateAttemptTime, lastUpdateFailed: false, totalScanned: allCoins.length, excludedCount: allCoins.length - valid.length, isPartial: hitRateLimit, gainers, losers };
     const jsonString = JSON.stringify(finalObject);
-    await env.KV_STORE.put(CACHE_KEY, jsonString, { expirationTtl: 172800 });
+    await env.KV_STORE.put(PRI_CACHE_KEY, jsonString, { expirationTtl: 172800 });
     return jsonString;
 }
 
-// ==============================================================================
-// 5. HANDLERS: DEX MOVERS (GECKOTERMINAL + IMAGE PROXY)
-// ==============================================================================
 
-function getStealthHeaders() {
+// =================================================================================
+// PART 3: DEX MOVERS LOGIC (GECKOTERMINAL)
+// Copied from "_worker.js" - variables renamed ONLY to avoid collision
+// =================================================================================
+
+const DEX_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    // Tell browsers to cache API responses for 30s
+    "Cache-Control": "public, max-age=30", 
+};
+
+const DEX_KV_KEY_PREFIX = "dex_cache_";
+const DEX_IMG_CACHE_PREFIX = "img_";
+const DEX_SOFT_REFRESH_MS = 4 * 60 * 1000;   // 4 Minutes
+const DEX_HARD_REFRESH_MS = 5 * 60 * 1000;   // 5 Minutes
+
+const DEX_NETWORK_MAP = {
+    'solana': 'solana',
+    'ethereum': 'eth',
+    'bnb': 'bsc',
+    'base': 'base'
+};
+
+// === STEALTH HEADERS ===
+function getDexStealthHeaders() {
     const agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
@@ -314,50 +303,80 @@ function getStealthHeaders() {
     };
 }
 
-async function handleImageProxy(request, env, url) {
+// === IMAGE PROXY LOGIC ===
+async function handleDexImageProxy(request, env, url) {
     const targetUrl = url.searchParams.get("url");
     if (!targetUrl) return new Response("Missing URL", { status: 400 });
 
+    // 1. Try to get from Main Database (KV)
     if (env.KV_STORE) {
-        const imgKey = DEX_IMG_PREFIX + btoa(targetUrl);
+        const imgKey = DEX_IMG_CACHE_PREFIX + btoa(targetUrl);
+        
         const { value, metadata } = await env.KV_STORE.getWithMetadata(imgKey, { type: "stream" });
+        
         if (value) {
             return new Response(value, {
-                headers: { "Content-Type": metadata?.contentType || "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=604800", "X-Source": "Worker-KV-Cache" }
+                headers: {
+                    "Content-Type": metadata?.contentType || "image/png",
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "public, max-age=604800", 
+                    "X-Source": "Worker-KV-Cache"
+                }
             });
         }
     }
 
+    // 2. If not in DB, download it live
     try {
-        const imgRes = await fetch(decodeURIComponent(targetUrl), { headers: { "User-Agent": "Mozilla/5.0" } });
+        const imgRes = await fetch(decodeURIComponent(targetUrl), {
+            headers: { "User-Agent": "Mozilla/5.0" }
+        });
+        
         const newHeaders = new Headers(imgRes.headers);
         newHeaders.set("Access-Control-Allow-Origin", "*");
-        newHeaders.set("Cache-Control", "public, max-age=86400"); 
+        newHeaders.set("Cache-Control", "public, max-age=86400"); // 7 Days
 
-        return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
-    } catch (e) { return new Response("Proxy Error", { status: 500 }); }
+        return new Response(imgRes.body, {
+            status: imgRes.status,
+            headers: newHeaders
+        });
+    } catch (e) {
+        return new Response("Proxy Error", { status: 500 });
+    }
 }
 
+// === DATA CACHING LOGIC ===
 async function handleDexStatsWithCache(request, env, ctx, network) {
-    if (!env.KV_STORE) return handleDexStats(network); 
+    if (!env.KV_STORE) {
+        return handleDexRawStats(network); // Fallback if no database
+    }
 
-    const cacheKey = `${DEX_KV_PREFIX}${network}`;
+    const cacheKey = `${DEX_KV_KEY_PREFIX}${network}`;
     const now = Date.now();
     let cached = null;
     let age = 0;
 
+    // Try to read cache
     try {
         const raw = await env.KV_STORE.get(cacheKey);
-        if (raw) { cached = JSON.parse(raw); age = now - (cached.timestamp || 0); }
+        if (raw) {
+            cached = JSON.parse(raw);
+            age = now - (cached.timestamp || 0);
+        }
     } catch (e) { console.error("KV Error", e); }
 
-    if (cached && age < DEX_SOFT_REFRESH_MS) return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fresh" } });
+    // Strategy A: Fresh Cache (0-4 mins) -> Return instantly
+    if (cached && age < DEX_SOFT_REFRESH_MS) {
+        return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fresh" } });
+    }
 
+    // Strategy B: Stale Cache (4-5 mins) -> Return old data, update in background
     if (cached && age < DEX_HARD_REFRESH_MS) {
         ctx.waitUntil(refreshDexData(env, network, cacheKey, ctx));
         return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Stale-Background" } });
     }
 
+    // Strategy C: Expired (>5 mins) -> Blocking update
     console.log(`Cache expired for ${network}. Fetching live...`);
     try {
         const freshData = await refreshDexData(env, network, cacheKey, ctx);
@@ -368,48 +387,73 @@ async function handleDexStatsWithCache(request, env, ctx, network) {
     }
 }
 
+// === DEEP SCAN: DATA + IMAGE PRE-FETCHING ===
 async function refreshDexData(env, network, key, ctx) {
-    const data = await handleDexStats(network); 
+    const data = await handleDexRawStats(network); 
     
     if (data && !data.error && data.gainers) {
+        // 1. Save the JSON data
         await env.KV_STORE.put(key, JSON.stringify(data), { expirationTtl: 1800 });
+        
+        // 2. TRIGGER BACKGROUND IMAGE CACHING
         if (ctx && ctx.waitUntil) {
-            const topTokens = [...data.gainers.slice(0, 20), ...data.losers.slice(0, 20)];
-            ctx.waitUntil(backgroundCacheImages(env, topTokens));
+            const topTokens = [
+                ...data.gainers.slice(0, 20), 
+                ...data.losers.slice(0, 20)
+            ];
+            ctx.waitUntil(backgroundDexCacheImages(env, topTokens));
         }
     }
     return data;
 }
 
-async function backgroundCacheImages(env, tokens) {
+// === BACKGROUND TASK: DOWNLOAD & SAVE IMAGES ===
+async function backgroundDexCacheImages(env, tokens) {
     if (!env.KV_STORE) return;
+
     const fetches = tokens.map(async (token) => {
         if (!token.image || token.image.includes("bullish.png")) return;
+
         const imgUrl = token.image;
-        const imgKey = DEX_IMG_PREFIX + btoa(imgUrl); 
+        const imgKey = DEX_IMG_CACHE_PREFIX + btoa(imgUrl); // Unique Key
 
         try {
-            const res = await fetch(imgUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+            const res = await fetch(imgUrl, { 
+                headers: { "User-Agent": "Mozilla/5.0" } 
+            });
+
             if (res.ok) {
                 const blob = await res.arrayBuffer();
                 const type = res.headers.get("Content-Type") || "image/png";
-                await env.KV_STORE.put(imgKey, blob, { expirationTtl: 604800, metadata: { contentType: type } });
+
+                // Save to KV (Database) with 7 Day Expiration
+                await env.KV_STORE.put(imgKey, blob, { 
+                    expirationTtl: 604800, 
+                    metadata: { contentType: type } 
+                });
             }
-        } catch (err) { console.log(`Failed to cache image for ${token.symbol}`); }
+        } catch (err) {
+            console.log(`Failed to cache image for ${token.symbol}`);
+        }
     });
+
     await Promise.all(fetches);
 }
 
-async function handleDexStats(networkKey) {
+// === API LOGIC ===
+async function handleDexRawStats(networkKey) {
     const apiSlug = DEX_NETWORK_MAP[networkKey];
     if (!apiSlug) throw new Error("Invalid Network");
 
     try {
         const promises = [1, 2, 3, 4, 5].map(page => 
-            fetch(`https://api.geckoterminal.com/api/v2/networks/${apiSlug}/trending_pools?include=base_token&page=${page}`, { headers: getStealthHeaders() })
+            fetch(`https://api.geckoterminal.com/api/v2/networks/${apiSlug}/trending_pools?include=base_token&page=${page}`, { 
+                headers: getDexStealthHeaders() 
+            })
         );
 
         const responses = await Promise.all(promises);
+        
         let allPools = [];
         let allIncluded = [];
 
@@ -444,18 +488,33 @@ async function handleDexStats(networkKey) {
             };
         });
 
+        // FILTER: Remove scams ($0 price or <$1000 volume)
         formatted = formatted.filter(p => p.price > 0 && p.volume_24h > 1000);
+
+        // Deduplicate
         const unique = [];
         const seen = new Set();
         for (const item of formatted) {
-            if (!seen.has(item.symbol)) { seen.add(item.symbol); unique.push(item); }
+            if (!seen.has(item.symbol)) {
+                seen.add(item.symbol);
+                unique.push(item);
+            }
         }
 
         const onlyGainers = unique.filter(x => x.change_24h > 0);
         const onlyLosers = unique.filter(x => x.change_24h < 0);
+
         const gainers = onlyGainers.sort((a, b) => b.change_24h - a.change_24h).slice(0, 50);
         const losers = onlyLosers.sort((a, b) => a.change_24h - b.change_24h).slice(0, 50);
 
-        return { timestamp: Date.now(), network: networkKey, gainers, losers };
-    } catch (e) { throw new Error(`Worker Error: ${e.message}`); }
+        return {
+            timestamp: Date.now(),
+            network: networkKey,
+            gainers,
+            losers
+        };
+
+    } catch (e) {
+        throw new Error(`Worker Error: ${e.message}`);
+    }
 }

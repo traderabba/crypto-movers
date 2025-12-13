@@ -59,10 +59,6 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
         
-        // IDENTIFY CALLER: Which HTML page is asking?
-        const referer = request.headers.get("Referer") || "";
-        const isDexPage = referer.includes("dex-movers") || referer.includes("dexmovers");
-
         // --- ROUTE A: DYNAMIC SITEMAP (Primary) ---
         if (url.pathname === "/sitemap.xml") {
             return handleSitemap(request, env);
@@ -70,14 +66,19 @@ export default {
 
         // --- ROUTE B: API STATS (SHARED) ---
         if (url.pathname === "/api/stats") {
-            // 1. Check if specific network requested (Manual Override)
+            // 1. Check if specific network requested (Manual Override from UI)
             let network = url.searchParams.get("network");
 
-            // 2. INTELLIGENT ROUTING
-            // If the user is on dex-movers.html and didn't specify a network,
-            // they ALWAYS want the default DEX data (Solana).
-            if (!network && isDexPage) {
-                network = "solana";
+            // 2. INTELLIGENT ROUTING (The Fix)
+            // If no network is specified, check the Referer.
+            if (!network) {
+                const referer = (request.headers.get("Referer") || "").toLowerCase();
+                
+                // STRICT CHECK: If the user is on any page with "dex" in the URL (dex-movers.html),
+                // we force the default network to Solana so the spinner stops.
+                if (referer.includes("dex")) {
+                    network = "solana";
+                }
             }
 
             // 3. EXECUTE

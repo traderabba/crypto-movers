@@ -304,3 +304,51 @@ footer {
     outline: none;
     box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.4);
 }
+
+/* --- DATA SOURCE TOGGLE (New) --- */
+.toggle-container {
+    display: flex;
+    justify-content: center;
+    gap: 15px;
+    margin: 25px 0 35px;
+    flex-wrap: wrap;
+}
+
+/* Toggle Button Style - Extends .btn */
+.btn-toggle {
+    background: var(--white);
+    color: #64748b; /* Muted gray for inactive */
+    border: 2px solid #e2e8f0; /* Subtle border */
+    box-shadow: 0 4px 6px rgba(0,0,0,0.03);
+    min-width: 140px;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+/* Hover State */
+.btn-toggle:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: #f8fafc;
+    transform: translateY(-2px);
+}
+
+/* Active State (Selected) */
+.btn-toggle.active {
+    background: var(--dark);
+    color: var(--white);
+    border-color: var(--dark);
+    box-shadow: 0 6px 12px rgba(15, 23, 42, 0.2);
+    opacity: 1;
+}
+
+/* Mobile Adjustments */
+@media (max-width: 768px) {
+    .toggle-container { gap: 10px; margin: 20px 0; }
+    .btn-toggle { 
+        padding: 10px 15px; 
+        font-size: 13px; 
+        min-width: auto; 
+        flex: 1; /* Make buttons equal width on mobile */
+    }
+}

@@ -1,12 +1,11 @@
 // === CONFIGURATION ===
-const CACHE_KEY = "market_data_v8"; 
+const CACHE_KEY = "market_data_v7"; 
 const CACHE_LOCK_KEY = "market_data_lock";
-const UPDATE_INTERVAL_MS = 10 * 60 * 1000; // (Reference only)
+const UPDATE_INTERVAL_MS = 10 * 60 * 1000; // Target: Fresh data every 10 mins
 const SOFT_REFRESH_MS = 8 * 60 * 1000;     // Trigger: Deep scan starts at 8 mins
-const HARD_EXPIRY_MS = 15 * 60 * 1000;     // Ancient: If > 15 mins, force wait
 const MIN_RETRY_DELAY_MS = 1 * 60 * 1000;  // Retry: If fail, try again in 1 min
 const TIMEOUT_MS = 45000; 
-const LOCK_TIMEOUT_MS = 120000; 
+const LOCK_TIMEOUT_MS = 120000;
 
 // === EXCLUSION FILES ===
 const EXCLUSION_FILES = [
@@ -98,47 +97,34 @@ export default {
 
                 const isUpdating = lock && (now - parseInt(lock)) < LOCK_TIMEOUT_MS;
 
-                // 1. FRESH DATA: Serve immediately
                 if (cachedData && dataAge < SOFT_REFRESH_MS) {
                     return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-Fresh" } });
                 }
 
-                // 2. UPDATE IN PROGRESS: Serve stale data (even if ancient, better than error)
                 if (isUpdating && cachedData) {
                     return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-UpdateInProgress" } });
                 }
 
-                // 3. STALE DATA: Needs Update
                 if (cachedData && dataAge >= SOFT_REFRESH_MS) {
                     const lastAttemptAge = now - (cachedData.lastUpdateAttempt || 0);
                     
                     if (lastAttemptAge >= MIN_RETRY_DELAY_MS) {
                         console.log("Triggering Background Update...");
                         
-                        // Lock and start background work
                         await env.KV_STORE.put(CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(LOCK_TIMEOUT_MS / 1000) });
+                        
                         ctx.waitUntil(
                             updateMarketDataSafe(env, cachedData, true)
                                 .finally(() => env.KV_STORE.delete(CACHE_LOCK_KEY).catch(() => {}))
                         );
                         
-                        // === LOGIC CHECK ===
-                        // If data is NOT ancient (< 15 mins), serve it immediately (Proactive)
-                        if (dataAge < HARD_EXPIRY_MS) {
-                            return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-Proactive", "X-Update-Triggered": "Deep-Scan" } });
-                        }
-                        
-                        // If data IS ancient (> 15 mins), fall through to "Sprint" (Force Wait)
-                        console.log(`Data is ancient (${(dataAge/60000).toFixed(1)}m). Forcing live fetch.`);
-                        
+                        return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-Proactive", "X-Update-Triggered": "Deep-Scan" } });
                     } else {
-                        // Rate limited (retried too soon), just serve what we have
                         return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-RateLimited" } });
                     }
                 }
 
-                // 4. EMPTY OR ANCIENT CACHE: Force Live Fetch (The "Sprint")
-                console.log("Cache empty or Ancient. Starting Sprint...");
+                console.log("Cache empty. Starting Sprint...");
                 await env.KV_STORE.put(CACHE_LOCK_KEY, now.toString(), { expirationTtl: Math.floor(LOCK_TIMEOUT_MS / 1000) });
                 
                 try {
@@ -168,7 +154,7 @@ export default {
 
 // HELPERS
 
-// === FETCH EXCLUSION LISTS ===
+// === NEW: FETCH EXCLUSION LISTS ===
 async function getExclusions(env) {
     const exclusionSet = new Set();
     const baseUrl = "http://placeholder"; // Internal fetch base
@@ -179,6 +165,7 @@ async function getExclusions(env) {
             if (res.ok) {
                 const list = await res.json();
                 if (Array.isArray(list)) {
+                    // Add all to Set, normalized to lowercase
                     list.forEach(item => exclusionSet.add(item.toLowerCase()));
                 }
             }
@@ -281,9 +268,13 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
 
     // 2. Filter using the Exclusion Set
     const valid = allCoins.filter(c => {
+        // Basic Checks
         if (!c || !c.symbol || c.price_change_percentage_24h == null || c.current_price == null) return false;
+        
+        // Exclusion Check (Case Insensitive)
         const symbol = c.symbol.toLowerCase();
         if (exclusionSet.has(symbol)) return false;
+
         return true;
     });
     
@@ -310,7 +301,7 @@ async function updateMarketData(env, existingData, isDeepScan, signal = null) {
         lastUpdateAttempt: updateAttemptTime,
         lastUpdateFailed: false,
         totalScanned: allCoins.length,
-        excludedCount: allCoins.length - valid.length, 
+        excludedCount: allCoins.length - valid.length, // Added stat for debugging
         isPartial: hitRateLimit,
         gainers,
         losers

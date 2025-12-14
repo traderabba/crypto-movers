@@ -305,50 +305,41 @@ footer {
     box-shadow: 0 0 0 3px rgba(71, 85, 105, 0.4);
 }
 
-/* --- DATA SOURCE TOGGLE (New) --- */
+/* --- DATA SOURCE TOGGLE (Fixed Vibe) --- */
 .toggle-container {
     display: flex;
     justify-content: center;
     gap: 15px;
     margin: 25px 0 35px;
-    flex-wrap: wrap;
 }
 
-/* Toggle Button Style - Extends .btn */
+/* Base Toggle Style - Extends .btn properties */
 .btn-toggle {
-    background: var(--white);
-    color: #64748b; /* Muted gray for inactive */
-    border: 2px solid #e2e8f0; /* Subtle border */
-    box-shadow: 0 4px 6px rgba(0,0,0,0.03);
-    min-width: 140px;
+    background: var(--white); /* White background by default */
+    color: #64748b; /* Slate gray text */
+    border: none; /* No ugly borders */
+    box-shadow: 0 4px 10px rgba(0,0,0,0.05); /* Soft float */
+    min-width: 150px;
     justify-content: center;
     transition: all 0.2s ease;
 }
 
 /* Hover State */
 .btn-toggle:hover {
-    border-color: var(--primary);
-    color: var(--primary);
-    background: #f8fafc;
     transform: translateY(-2px);
+    color: var(--primary); /* Blue highlight on hover */
+    box-shadow: 0 6px 15px rgba(0,0,0,0.1);
 }
 
 /* Active State (Selected) */
 .btn-toggle.active {
-    background: var(--dark);
+    background: var(--dark); /* Matches your Nav Buttons */
     color: var(--white);
-    border-color: var(--dark);
-    box-shadow: 0 6px 12px rgba(15, 23, 42, 0.2);
-    opacity: 1;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25); /* Deep shadow */
 }
 
-/* Mobile Adjustments */
+/* Mobile Tweak */
 @media (max-width: 768px) {
     .toggle-container { gap: 10px; margin: 20px 0; }
-    .btn-toggle { 
-        padding: 10px 15px; 
-        font-size: 13px; 
-        min-width: auto; 
-        flex: 1; /* Make buttons equal width on mobile */
-    }
+    .btn-toggle { flex: 1; padding: 12px; font-size: 13px; }
 }

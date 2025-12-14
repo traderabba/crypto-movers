@@ -1,7 +1,5 @@
-// _worker.js
-
 // === CONFIGURATION ===
-const CACHE_KEY = "market_data_v7"; 
+const CACHE_KEY = "market_data_v8"; 
 const CACHE_LOCK_KEY = "market_data_lock";
 const UPDATE_INTERVAL_MS = 10 * 60 * 1000; // (Reference only)
 const SOFT_REFRESH_MS = 8 * 60 * 1000;     // Trigger: Deep scan starts at 8 mins

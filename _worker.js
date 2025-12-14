@@ -98,7 +98,8 @@ export default {
 
                 const isUpdating = lock && (now - parseInt(lock)) < LOCK_TIMEOUT_MS;
 
-                if (cachedData && dataAge < SOFT_REFRESH_MS) {
+                // Only serve stale data if it's NOT ancient (less than 30 mins old)
+if (cachedData && dataAge >= SOFT_REFRESH_MS && dataAge < HARD_EXPIRY_MS) {
                     return new Response(cachedRaw, { headers: { ...HEADERS, "X-Source": "Cache-Fresh" } });
                 }
 

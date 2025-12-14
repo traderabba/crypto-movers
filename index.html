@@ -5,21 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     
-    <title>Crypto Daily Gainers & Losers | Market Movers Tracker</title>
-    <meta name="description" content="Track the top 20 crypto gainers and losers in the last 24 hours across centralized and decentralized exchanges. Real-time market analysis tool for traders. Generate daily reports instantly.">
-    <meta name="keywords" content="crypto gainers, top losers, cryptocurrency market, daily crypto report, crypto trading tool, coingecko api, market movers">
+    <title>Crypto Movers | Spot & DEX Market Pulse</title>
+    <meta name="description" content="Track top crypto gainers and losers across Centralized (Spot) and Decentralized (DEX) exchanges. Real-time analysis for Solana, Ethereum, Base, and more.">
+    <meta name="keywords" content="crypto gainers, dex movers, solana gainers, coingecko api, geckoterminal, crypto trading tool">
     <meta name="author" content="TraderAbba">
     
-    <meta property="og:title" content="Crypto Daily Gainers & Losers Curator">
-    <meta property="og:description" content="View and download the top performing cryptocurrencies of the day. Free tool for market analysis.">
+    <meta property="og:title" content="Crypto Movers | Spot & DEX Tracker">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://cryptomovers.pages.dev"> 
-    <meta property="og:image" content="https://cryptomovers.pages.dev/images/social-meɗia.jpg">
+    <meta property="og:image" content="https://cryptomovers.pages.dev/images/social-media.jpg">
 
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:creator" content="@TraderAbba">
-    <meta name="twitter:title" content="Crypto Daily Gainers & Losers">
-    <meta name="twitter:description" content="Instant snapshot of the crypto market's top movers. Download daily reports.">
+    <meta name="twitter:title" content="Crypto Movers | Spot & DEX Tracker">
+    <meta name="twitter:description" content="Instant snapshot of top market movers across CEX and DEX.">
     <meta name="twitter:image" content="https://cryptomovers.pages.dev/images/social-media.jpg">
 
     <link rel="icon" type="image/png" href="/images/bullish.png">
@@ -41,7 +40,7 @@
             <ul class="nav-menu">
                 <li class="nav-item"><a href="index.html" class="nav-link active">Home</a></li>
                 <li class="nav-item"><a href="dex-movers.html" class="nav-link">DEX Movers</a></li>  
-                  <li class="nav-item"><a href="more-tools.html" class="nav-link">More Tools</a></li>
+                <li class="nav-item"><a href="more-tools.html" class="nav-link">More Tools</a></li>
                 <li class="nav-item"><a href="about-us.html" class="nav-link">About Us</a></li>
                 <li class="nav-item"><a href="contact-us.html" class="nav-link">Contact Us</a></li>            
                 <li class="nav-item">
@@ -60,9 +59,19 @@
         
         <div class="hero">
             <h1>Daily Market Pulse</h1>
-            <p class="sub-text">Top Crypto Movers (24H)</p>
+            <p class="sub-text">Top Movers & On-Chain Trends</p>
             
+            <div class="toggle-container" style="display:flex; justify-content:center; gap:12px; margin: 25px 0;">
+                <button id="btn-spot" class="btn active" style="background:var(--accent); border:none;" onclick="switchMode('spot')">
+                    <i class="fas fa-building"></i> Spot (CEX)
+                </button>
+                <button id="btn-dex" class="btn" style="background:var(--card-bg); border:1px solid var(--border);" onclick="switchMode('dex')">
+                    <i class="fas fa-robot"></i> On-Chain (DEX)
+                </button>
+            </div>
+
             <div class="controls" data-html2canvas-ignore="true">
+                
                 <button class="btn btn-gainers" id="btn-gain" onclick="captureSection('gainers')">
                     <i class="fas fa-camera"></i> Snap Gainers
                 </button>
@@ -70,6 +79,15 @@
                     <i class="fas fa-camera"></i> Snap Losers
                 </button>
                 
+                <div class="select-wrapper" id="dex-controls" style="display:none;">
+                    <select id="network-select" class="btn btn-sort" onchange="fetchDexData(this.value)">
+                        <option value="solana" selected>Solana</option>
+                        <option value="ethereum">Ethereum</option>
+                        <option value="bnb">BNB Chain</option>
+                        <option value="base">Base</option>
+                    </select>
+                </div>
+
                 <div class="select-wrapper">
                     <select id="sort-select" class="btn btn-sort" onchange="handleSortChange(this.value)">
                         <option value="5">Top 5</option>
@@ -104,69 +122,80 @@
                 <div class="footer-logo">  <img src="/images/bullish.png" alt="icon"> Crypto Movers</div>
                 <div class="footer-nav">
                  <a href="/" title="Homepage">Home</a>
-                    <a href="/dex-movers.html">DEX Movers</a>
                     <a href="contact-us.html">Contact Us</a>
                 </div>
                 <div class="copyright">
-                    &copy; 2025 Crypto Movers v2.0. Powered by CoinGecko API. Made With 💚 by <a href="https://linktr.ee/traderabba" target="_blank">@TraderAbba</a>
+                    &copy; 2025 Crypto Movers v2.5. Powered by CoinGecko & GeckoTerminal.
                     <br>
                     <span id="timestamp" style="color: #64748b;">Waiting for data...</span>
                 </div>
             </div>
         </footer>
     </main>
-<!-- Overlay Modal -->
-<div id="coin-modal" class="modal-overlay">
-    <div class="modal-content">
-        <button class="close-modal" onclick="closeModal()">&times;</button>
-        
-        <div class="modal-header">
-            <img id="m-img" src="" alt="">
-            <div>
-                <h2 id="m-name">Bitcoin</h2>
-                <span id="m-symbol">BTC</span>
-            </div>
-            <div id="m-price" class="modal-price">$0.00</div>
-        </div>
 
-        <div class="modal-grid">
-            <div class="stat-box">
-                <span class="label">Market Cap</span>
-                <span class="value" id="m-cap">$0</span>
+    <div id="coin-modal" class="modal-overlay">
+        <div class="modal-content">
+            <button class="close-modal" onclick="closeModal()">&times;</button>
+            
+            <div class="modal-header">
+                <img id="m-img" src="" alt="">
+                <div>
+                    <h2 id="m-name">Token</h2>
+                    <span id="m-symbol">TICKER</span>
+                </div>
+                <div id="m-price" class="modal-price">$0.00</div>
             </div>
-            <div class="stat-box">
-                <span class="label">24h Volume</span>
-                <span class="value" id="m-vol">$0</span>
-            </div>
-        </div>
 
-        <div class="modal-history">
-            <h3>Price Performance</h3>
-            <div class="history-row">
-                <span>24h</span> <span id="m-24h" class="percent-tag">0%</span>
+            <div class="modal-grid">
+                <div class="stat-box">
+                    <span class="label">M.Cap / FDV</span>
+                    <span class="value" id="m-cap">$0</span>
+                </div>
+                <div class="stat-box">
+                    <span class="label">24h Volume</span>
+                    <span class="value" id="m-vol">$0</span>
+                </div>
             </div>
-            <div class="history-row">
-                <span>7d</span> <span id="m-7d" class="percent-tag">0%</span>
-            </div>
-            <div class="history-row">
-                <span>30d</span> <span id="m-30d" class="percent-tag">0%</span>
-            </div>
-             <div class="history-row">
-                <span>1y</span> <span id="m-1y" class="percent-tag">0%</span>
-            </div>
-        </div>
 
-        <div class="modal-actions">
-            <a id="m-link-cg" href="#" target="_blank" class="action-btn cg-btn">
-                CoinGecko
-            </a>
-            <a id="m-link-tv" href="#" target="_blank" class="action-btn tv-btn">
-                <i class="fas fa-chart-line"></i> TradingView
-            </a>
+            <div class="modal-history">
+                <h3>Price Performance</h3>
+                <div class="history-row" id="row-30m" style="display:none;">
+                    <span>30m</span> <span id="m-30m" class="percent-tag">0%</span>
+                </div>
+                <div class="history-row" id="row-1h" style="display:none;">
+                    <span>1h</span> <span id="m-1h" class="percent-tag">0%</span>
+                </div>
+                <div class="history-row" id="row-6h" style="display:none;">
+                    <span>6h</span> <span id="m-6h" class="percent-tag">0%</span>
+                </div>
+
+                <div class="history-row">
+                    <span>24h</span> <span id="m-24h" class="percent-tag">0%</span>
+                </div>
+
+                <div class="history-row" id="row-7d">
+                    <span>7d</span> <span id="m-7d" class="percent-tag">0%</span>
+                </div>
+                <div class="history-row" id="row-30d">
+                    <span>30d</span> <span id="m-30d" class="percent-tag">0%</span>
+                </div>
+                 <div class="history-row" id="row-1y">
+                    <span>1y</span> <span id="m-1y" class="percent-tag">0%</span>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <a id="m-link-cg" href="#" target="_blank" class="action-btn cg-btn">CoinGecko</a>
+                <a id="m-link-tv" href="#" target="_blank" class="action-btn tv-btn">TradingView</a>
+                
+                <a id="m-link-pool" href="#" target="_blank" class="action-btn cg-btn" style="display:none;">
+                    <i class="fas fa-external-link-alt"></i> GeckoTerminal
+                </a>
+            </div>
         </div>
     </div>
-</div>
+
     <script src="scripts/common.js"></script>
-<script src="scripts/home.js"></script>
+    <script src="scripts/home.js?v=3"></script> 
 </body>
 </html>

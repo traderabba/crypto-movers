@@ -41,17 +41,27 @@ async function init() {
 
 async function changeNetwork(network) {
     currentNetwork = network;
-    const loader = document.getElementById('loader');
-    if (loader) {
-        loader.style.display = 'flex';
-        const p = loader.querySelector('p');
-        if(p) p.innerText = `Scanning ${network.toUpperCase()}...`;
-    }
     await fetchData(network);
 }
 
 async function fetchData(network) {
     const loader = document.getElementById('loader');
+    // Show loading state
+    if (loader) {
+        loader.style.display = 'flex';
+        loader.innerHTML = `
+            <div style="text-align:center; padding:30px;">
+                <i class="fas fa-spinner fa-spin" style="font-size:40px; margin-bottom:15px;"></i>
+                <p>Scanning ${network.toUpperCase()}...</p>
+            </div>`;
+    }
+    
+    // Clear existing data while loading
+    const gainerContainer = document.getElementById('gainers-list');
+    const loserContainer = document.getElementById('losers-list');
+    if (gainerContainer) gainerContainer.innerHTML = '';
+    if (loserContainer) loserContainer.innerHTML = '';
+    
     try {
         // Add timestamp to prevent browser caching
         const response = await fetch(`/api/stats?network=${network}&t=${Date.now()}`);
@@ -79,20 +89,27 @@ async function fetchData(network) {
                 Updated: ${date.toLocaleTimeString()}
             `;
         }
+        
+        // Hide loader on success
         if (loader) loader.style.display = 'none';
 
     } catch (e) {
         console.error("Fetch Error:", e);
+        // Show error but in a user-friendly way
         if (loader) {
             loader.innerHTML = `
                 <div style="text-align:center; padding:30px;">
                     <i class="fas fa-exclamation-triangle" style="font-size:40px; color:#ef4444; margin-bottom:15px;"></i>
-                    <h3 style="margin-bottom:15px;">Data Source Issue</h3>
-                    <p style="color:#64748b; margin-bottom:20px;">${e.message}</p>
-                    <button onclick="location.reload()" class="btn" style="background:var(--dark); margin:0 auto;">Try Again</button>
+                    <h3 style="margin-bottom:15px;">Data Unavailable</h3>
+                    <p style="color:#64748b; margin-bottom:20px;">${e.message || "Please try again in a few moments"}</p>
+                    <button onclick="fetchData('${network}')" class="btn" style="background:var(--dark); margin:0 auto;">Retry</button>
                 </div>`;
-            loader.style.display = 'flex';
+            // KEEP loader visible to show error (already set to display:flex)
         }
+        
+        // Show empty state in containers
+        if (gainerContainer) gainerContainer.innerHTML = `<div style="width:100%; text-align:center; padding:30px; color:#94a3b8;">Error loading data</div>`;
+        if (loserContainer) loserContainer.innerHTML = `<div style="width:100%; text-align:center; padding:30px; color:#94a3b8;">Error loading data</div>`;
     }
 }
 

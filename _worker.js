@@ -1,6 +1,6 @@
 // _worker.js
 // Architecture: Single-File Modular (Class-Based)
-// Status: Ready for Production
+// Status: PRODUCTION READY (Restored CEX Fields + Error Handling)
 
 // ============================================================================
 // CONFIGURATION
@@ -16,7 +16,7 @@ const CONFIG = {
         },
         HEADERS_IMG: {
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "public, max-age=604800", // 7 Days
+            "Cache-Control": "public, max-age=604800", // 7 Days (KV)
             "X-Source": "Worker-KV-Cache"
         }
     },
@@ -51,7 +51,7 @@ const CONFIG = {
 };
 
 // ============================================================================
-// MODULE 1: SHARED UTILITIES (Sitemap & Tools)
+// MODULE 1: SHARED UTILITIES
 // ============================================================================
 class SharedTools {
     static async handleSitemap(request, env) {
@@ -112,20 +112,21 @@ class CexWorker {
 
             const isUpdating = lock && (now - parseInt(lock)) < CONFIG.CEX.LOCK_TIMEOUT;
 
-            // Strategy 1: Fresh Cache
+            // 1. Fresh Cache
             if (cached && age < CONFIG.CEX.SOFT_REFRESH) {
                 return this.#json(cachedRaw, "Cache-Fresh");
             }
 
-            // Strategy 2: Update in Progress
+            // 2. Update in Progress
             if (isUpdating && cached) {
                 return this.#json(cachedRaw, "Cache-UpdateInProgress");
             }
 
-            // Strategy 3: Stale -> Background Update
+            // 3. Stale -> Background Update
             if (cached) {
                 const lastAttemptAge = now - (cached.lastUpdateAttempt || 0);
-                if (lastAttemptAge >= (2 * 60 * 1000)) { // Min retry delay
+                if (lastAttemptAge >= (2 * 60 * 1000)) { 
+                    console.log("Triggering Background Update...");
                     await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { expirationTtl: 120 });
                     ctx.waitUntil(
                         this.#updateData(cached, true)
@@ -136,16 +137,32 @@ class CexWorker {
                 return this.#json(cachedRaw, "Cache-RateLimited");
             }
 
-            // Strategy 4: No Cache -> Live Fetch (Sprint)
+            // 4. No Cache -> Live Fetch
+            console.log("Cache empty. Starting Sprint...");
             await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { expirationTtl: 120 });
+            
             try {
-                const fresh = await this.#fetchWithTimeout(false);
+                // Pass 'null' as existing data since we have none
+                const fresh = await this.#fetchWithTimeout(false, null);
                 await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, fresh, { expirationTtl: 172800 });
                 await this.env.KV_STORE.delete(CONFIG.CEX.LOCK_KEY).catch(() => {});
                 return this.#json(fresh, "Live-Fetch-Sprint");
             } catch (error) {
                 await this.env.KV_STORE.delete(CONFIG.CEX.LOCK_KEY).catch(() => {});
-                if (cached) return this.#json(cached, "Cache-Fallback-Error");
+                
+                // RESTORED ERROR HANDLING: If we have old data, return it with error flags
+                if (cached) {
+                    const fallback = {
+                        ...cached,
+                        lastUpdateAttempt: now,
+                        lastUpdateFailed: true,
+                        lastError: error.message || "Fetch failed",
+                        timestamp: cached.timestamp // Keep original timestamp
+                    };
+                    // Save failure state briefly (5 mins)
+                    await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, JSON.stringify(fallback), { expirationTtl: 300 });
+                    return this.#json(JSON.stringify(fallback), "Cache-Fallback-Error");
+                }
                 throw error;
             }
 
@@ -156,55 +173,96 @@ class CexWorker {
 
     async #updateData(existingData, isDeepScan) {
         try {
-            const fresh = await this.#fetchWithTimeout(isDeepScan);
+            const fresh = await this.#fetchWithTimeout(isDeepScan, existingData);
             await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, fresh, { expirationTtl: 172800 });
-        } catch (e) { console.error("CEX Background Update Failed", e); }
+        } catch (e) { 
+            console.error("Background update failed:", e); 
+            // Note: Original code didn't update KV on background failure, so we just log it.
+        }
     }
 
-    async #fetchWithTimeout(isDeepScan) {
+    async #fetchWithTimeout(isDeepScan, existingData) {
         const controller = new AbortController();
         const id = setTimeout(() => controller.abort(), CONFIG.CEX.TIMEOUT);
         try {
-            const res = await this.#performFetch(isDeepScan, controller.signal);
+            const res = await this.#performFetch(isDeepScan, controller.signal, existingData);
             clearTimeout(id);
             return res;
         } catch (e) {
             clearTimeout(id);
             if (e.name === 'AbortError') throw new Error("Request timeout");
+            if (e.message.includes("Rate Limit") || e.message.includes("429")) throw new Error("CoinGecko Busy (429). Wait 1 min.");
             throw e;
         }
     }
 
-    async #performFetch(isDeepScan, signal) {
+    async #performFetch(isDeepScan, signal, existingData) {
+        const updateAttemptTime = Date.now(); // RESTORED: Capture attempt time
         const pages = isDeepScan ? [1, 2, 3, 4, 5, 6] : [1];
         let allCoins = [];
         let hitRateLimit = false;
-        
-        // Load Exclusions
+        let lastError = null;
+
         const exclusionSet = await this.#getExclusions();
         const config = { headers: CONFIG.CEX.API_HEADERS, signal };
 
         for (const page of pages) {
             if (hitRateLimit) break;
-            try {
-                const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}&price_change_percentage=24h,7d,30d,1y`;
-                const res = await fetch(url, config);
-                
-                if (res.status === 429) { hitRateLimit = true; break; }
-                if (!res.ok) continue;
-                
-                const data = await res.json();
-                if (Array.isArray(data)) allCoins = allCoins.concat(data);
-                
-                if (pages.length > 1 && page < pages.length) await new Promise(r => setTimeout(r, 2000));
-            } catch (e) { break; }
+            
+            let success = false;
+            let attempts = 0;
+            const MAX_ATTEMPTS = 2;
+
+            while (attempts < MAX_ATTEMPTS && !success && !hitRateLimit) {
+                attempts++;
+                try {
+                    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}&price_change_percentage=24h,7d,30d,1y`;
+                    const res = await fetch(url, config);
+                    
+                    if (res.status === 429) { 
+                        if (attempts >= MAX_ATTEMPTS) {
+                            hitRateLimit = true;
+                            lastError = "Rate limit reached";
+                        }
+                        throw new Error("Rate Limit");
+                    }
+                    
+                    if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                    
+                    const data = await res.json();
+                    if (!Array.isArray(data)) throw new Error("Invalid Data");
+                    
+                    allCoins = allCoins.concat(data);
+                    success = true;
+                    
+                    if (pages.length > 1 && page < pages.length) await new Promise(r => setTimeout(r, 2000));
+
+                } catch (innerErr) {
+                    lastError = innerErr.message;
+                    if (attempts < MAX_ATTEMPTS && !hitRateLimit) {
+                        await new Promise(r => setTimeout(r, 2000 * attempts));
+                    }
+                }
+            }
         }
 
-        if (allCoins.length === 0) throw new Error("No CEX data fetched");
+        // RESTORED: Handle empty data fallback
+        if (allCoins.length === 0) {
+            if (existingData) {
+                return JSON.stringify({
+                    ...existingData,
+                    lastUpdateAttempt: updateAttemptTime,
+                    lastUpdateFailed: true,
+                    lastError: lastError || "Fetch failed",
+                    timestamp: existingData.timestamp
+                });
+            }
+            throw new Error(`Market data unavailable: ${lastError}`);
+        }
 
         // Filter
         const valid = allCoins.filter(c => {
-            if (!c || !c.symbol || !c.current_price) return false;
+            if (!c || !c.symbol || c.price_change_percentage_24h == null || c.current_price == null) return false;
             return !exclusionSet.has(c.symbol.toLowerCase());
         });
 
@@ -222,17 +280,22 @@ class CexWorker {
         const gainers = [...valid].sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h).slice(0, 50).map(formatCoin);
         const losers = [...valid].sort((a, b) => a.price_change_percentage_24h - b.price_change_percentage_24h).slice(0, 50).map(formatCoin);
 
+        // RESTORED: Full response structure
         return JSON.stringify({
             timestamp: Date.now(),
+            lastUpdateAttempt: updateAttemptTime,
+            lastUpdateFailed: false,
             totalScanned: allCoins.length,
+            excludedCount: allCoins.length - valid.length,
             isPartial: hitRateLimit,
-            gainers, losers
+            gainers, 
+            losers
         });
     }
 
     async #getExclusions() {
         const set = new Set();
-        const baseUrl = "http://placeholder"; // Internal fetch
+        const baseUrl = "http://placeholder"; 
         await Promise.all(CONFIG.CEX.EXCLUSIONS.map(async (filePath) => {
             try {
                 const res = await this.env.ASSETS.fetch(new URL(filePath, baseUrl));
@@ -266,12 +329,10 @@ class DexWorker {
         this.env = env;
     }
 
-    // --- SUB-FEATURE: IMAGE PROXY ---
     async handleImageProxy(urlStr) {
         const targetUrl = new URL(urlStr).searchParams.get("url");
         if (!targetUrl) return new Response("Missing URL", { status: 400 });
 
-        // 1. Try KV Cache
         if (this.env.KV_STORE) {
             const key = CONFIG.DEX.IMG_PREFIX + btoa(targetUrl);
             const { value, metadata } = await this.env.KV_STORE.getWithMetadata(key, { type: "stream" });
@@ -282,23 +343,28 @@ class DexWorker {
             }
         }
 
-        // 2. Fetch Live
         try {
             const res = await fetch(decodeURIComponent(targetUrl), { 
                 headers: { "User-Agent": "Mozilla/5.0" } 
             });
             const headers = new Headers(res.headers);
             headers.set("Access-Control-Allow-Origin", "*");
-            headers.set("Cache-Control", "public, max-age=86400"); // Browser: 1 day
+            headers.set("Cache-Control", "public, max-age=86400"); // 1 Day (Live)
             return new Response(res.body, { status: res.status, headers });
         } catch (e) {
             return new Response("Proxy Error", { status: 500 });
         }
     }
 
-    // --- MAIN FEATURE: DEX STATS ---
     async handleStats(ctx, network) {
-        if (!this.env.KV_STORE) return this.#fetchLive(network);
+        if (!this.env.KV_STORE) {
+            try {
+                const live = await this.#fetchLive(network);
+                return this.#json(live, "Live-NoKV");
+            } catch (e) {
+                return this.#error(e.message);
+            }
+        }
 
         const key = CONFIG.DEX.CACHE_PREFIX + network;
         const raw = await this.env.KV_STORE.get(key);
@@ -327,7 +393,6 @@ class DexWorker {
         try {
             const fresh = await this.#fetchLive(network);
             await this.env.KV_STORE.put(key, JSON.stringify(fresh), { expirationTtl: 1800 });
-            // Deep Scan Images
             if(ctx && ctx.waitUntil) ctx.waitUntil(this.#cacheImages(fresh));
             return this.#json(fresh, "Live-Fetch");
         } catch (e) {
@@ -366,16 +431,23 @@ class DexWorker {
         const slug = CONFIG.DEX.NETWORKS[networkKey];
         if (!slug) throw new Error("Invalid Network");
 
-        // Stealth Headers
-        const headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Referer": "https://www.geckoterminal.com/",
-            "Origin": "https://www.geckoterminal.com"
+        const getHeaders = () => {
+            const agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+            ];
+            return {
+                "User-Agent": agents[Math.floor(Math.random() * agents.length)],
+                "Accept": "application/json",
+                "Referer": "https://www.geckoterminal.com/",
+                "Origin": "https://www.geckoterminal.com"
+            };
         };
 
         const promises = [1, 2, 3, 4, 5].map(page => 
-            fetch(`https://api.geckoterminal.com/api/v2/networks/${slug}/trending_pools?include=base_token&page=${page}`, { headers })
+            fetch(`https://api.geckoterminal.com/api/v2/networks/${slug}/trending_pools?include=base_token&page=${page}`, { 
+                headers: getHeaders()
+            })
         );
 
         const responses = await Promise.all(promises);
@@ -413,10 +485,8 @@ class DexWorker {
             };
         });
 
-        // Filtering
         formatted = formatted.filter(p => p.price > 0 && p.volume_24h > 1000);
 
-        // Deduplicate
         const unique = [];
         const seen = new Set();
         for (const item of formatted) {
@@ -449,36 +519,29 @@ class DexWorker {
 }
 
 // ============================================================================
-// MAIN ROUTER (Default Export)
+// MAIN ROUTER
 // ============================================================================
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
-        // 1. Sitemap
         if (url.pathname === "/sitemap.xml") {
             return SharedTools.handleSitemap(request, env);
         }
 
-        // 2. Image Proxy (Route to DEX Logic)
         if (url.pathname === "/api/image-proxy") {
             return new DexWorker(env).handleImageProxy(request.url);
         }
 
-        // 3. Stats API (The Smart Switch)
         if (url.pathname === "/api/stats") {
             const network = url.searchParams.get("network");
-            
             if (network) {
-                // If "network" is present, it's definitely the DEX page
                 return new DexWorker(env).handleStats(ctx, network);
             } else {
-                // If no "network", it's the Homepage (CEX)
                 return new CexWorker(env).handleRequest(ctx);
             }
         }
 
-        // 4. Fallback to Static Assets
         return env.ASSETS.fetch(request);
     }
 };

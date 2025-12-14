@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     
-    <title>Crypto Movers | Spot & DEX Market Pulse</title>
+    <title>Crypto Movers | Cryto Daily Gainers and Losers</title>
     <meta name="description" content="Track top crypto gainers and losers across Centralized (Spot) and Decentralized (DEX) exchanges. Real-time analysis for Solana, Ethereum, Base, and more.">
     <meta name="keywords" content="crypto gainers, dex movers, solana gainers, coingecko api, geckoterminal, crypto trading tool">
     <meta name="author" content="TraderAbba">
@@ -61,14 +61,14 @@
             <h1>Daily Market Pulse</h1>
             <p class="sub-text">Top Movers & On-Chain Trends</p>
             
-            <div class="toggle-container" style="display:flex; justify-content:center; gap:12px; margin: 25px 0;">
-                <button id="btn-spot" class="btn active" style="background:var(--accent); border:none;" onclick="switchMode('spot')">
-                    <i class="fas fa-building"></i> Spot (CEX)
-                </button>
-                <button id="btn-dex" class="btn" style="background:var(--card-bg); border:1px solid var(--border);" onclick="switchMode('dex')">
-                    <i class="fas fa-robot"></i> On-Chain (DEX)
-                </button>
-            </div>
+            <div class="toggle-container">
+    <button id="btn-spot" class="btn btn-toggle active" onclick="switchMode('spot')">
+        <i class="fas fa-building"></i> Spot (CEX)
+    </button>
+    <button id="btn-dex" class="btn btn-toggle" onclick="switchMode('dex')">
+        <i class="fas fa-robot"></i> On-Chain (DEX)
+    </button>
+</div>
 
             <div class="controls" data-html2canvas-ignore="true">
                 

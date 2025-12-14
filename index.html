@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    
+    <title>Crypto Daily Gainers & Losers | Market Movers Tracker</title>
+    <meta name="description" content="Track the top 20 crypto gainers and losers in the last 24 hours across centralized and decentralized exchanges. Real-time market analysis tool for traders. Generate daily reports instantly.">
+    <meta name="keywords" content="crypto gainers, top losers, cryptocurrency market, daily crypto report, crypto trading tool, coingecko api, market movers">
+    <meta name="author" content="TraderAbba">
+    
+    <meta property="og:title" content="Crypto Daily Gainers & Losers Curator">
+    <meta property="og:description" content="View and download the top performing cryptocurrencies of the day. Free tool for market analysis.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://cryptomovers.pages.dev"> 
+    <meta property="og:image" content="https://cryptomovers.pages.dev/images/social-meɗia.jpg">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:creator" content="@TraderAbba">
+    <meta name="twitter:title" content="Crypto Daily Gainers & Losers">
+    <meta name="twitter:description" content="Instant snapshot of the crypto market's top movers. Download daily reports.">
+    <meta name="twitter:image" content="https://cryptomovers.pages.dev/images/social-media.jpg">
+
+    <link rel="icon" type="image/png" href="/images/bullish.png">
+    <link rel="stylesheet" href="style.css">
+    <script src="scripts/html2canvas.min.js"></script>
+</head>
+<body>
+
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="index.html" class="logo">
+                <img src="/images/bullish.png" alt="Logo">
+                <span>Crypto <span class="highlight">Movers</span></span>
+            </a>
+            
+            <div class="menu-toggle" id="mobile-menu">
+                <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item"><a href="index.html" class="nav-link active">Home</a></li>
+                <li class="nav-item"><a href="dex-movers.html" class="nav-link">DEX Movers</a></li>  
+                  <li class="nav-item"><a href="more-tools.html" class="nav-link">More Tools</a></li>
+                <li class="nav-item"><a href="about-us.html" class="nav-link">About Us</a></li>
+                <li class="nav-item"><a href="contact-us.html" class="nav-link">Contact Us</a></li>            
+                <li class="nav-item">
+                    <a href="https://x.com/traderabba" target="_blank" class="nav-btn">Follow Dev</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <p>Scanning Market Data...</p>
+    </div>
+
+    <main id="app-content">
+        
+        <div class="hero">
+            <h1>Daily Market Pulse</h1>
+            <p class="sub-text">Top Crypto Movers (24H)</p>
+            
+            <div class="controls" data-html2canvas-ignore="true">
+                <button class="btn btn-gainers" id="btn-gain" onclick="captureSection('gainers')">
+                    <i class="fas fa-camera"></i> Snap Gainers
+                </button>
+                <button class="btn btn-losers" id="btn-lose" onclick="captureSection('losers')">
+                    <i class="fas fa-camera"></i> Snap Losers
+                </button>
+                
+                <div class="select-wrapper">
+                    <select id="sort-select" class="btn btn-sort" onchange="handleSortChange(this.value)">
+                        <option value="5">Top 5</option>
+                        <option value="10">Top 10</option>
+                        <option value="20" selected>Top 20</option>
+                        <option value="30">Top 30</option>
+                        <option value="40">Top 40</option>
+                        <option value="50">Top 50</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div id="status-msg" role="status">Connecting...</div>
+        </div>
+
+        <section id="gainers-wrapper" class="market-section">
+            <div class="section-header">
+                <h2><i class="fas fa-arrow-trend-up" style="color:#10b981;"></i> Top Gainers</h2>
+            </div>
+            <div class="container" id="gainers-list"></div>
+        </section>
+
+        <section id="losers-wrapper" class="market-section">
+            <div class="section-header">
+                <h2><i class="fas fa-arrow-trend-down" style="color:#ef4444;"></i> Top Losers</h2>
+            </div>
+            <div class="container" id="losers-list"></div>
+        </section>
+
+        <footer>
+            <div class="footer-content">
+                <div class="footer-logo">  <img src="/images/bullish.png" alt="icon"> Crypto Movers</div>
+                <div class="footer-nav">
+                 <a href="/" title="Homepage">Home</a>
+                    <a href="/dex-movers.html">DEX Movers</a>
+                    <a href="contact-us.html">Contact Us</a>
+                </div>
+                <div class="copyright">
+                    &copy; 2025 Crypto Movers v2.0. Powered by CoinGecko API. Made With 💚 by <a href="https://linktr.ee/traderabba" target="_blank">@TraderAbba</a>
+                    <br>
+                    <span id="timestamp" style="color: #64748b;">Waiting for data...</span>
+                </div>
+            </div>
+        </footer>
+    </main>
+<!-- Overlay Modal -->
+<div id="coin-modal" class="modal-overlay">
+    <div class="modal-content">
+        <button class="close-modal" onclick="closeModal()">&times;</button>
+        
+        <div class="modal-header">
+            <img id="m-img" src="" alt="">
+            <div>
+                <h2 id="m-name">Bitcoin</h2>
+                <span id="m-symbol">BTC</span>
+            </div>
+            <div id="m-price" class="modal-price">$0.00</div>
+        </div>
+
+        <div class="modal-grid">
+            <div class="stat-box">
+                <span class="label">Market Cap</span>
+                <span class="value" id="m-cap">$0</span>
+            </div>
+            <div class="stat-box">
+                <span class="label">24h Volume</span>
+                <span class="value" id="m-vol">$0</span>
+            </div>
+        </div>
+
+        <div class="modal-history">
+            <h3>Price Performance</h3>
+            <div class="history-row">
+                <span>24h</span> <span id="m-24h" class="percent-tag">0%</span>
+            </div>
+            <div class="history-row">
+                <span>7d</span> <span id="m-7d" class="percent-tag">0%</span>
+            </div>
+            <div class="history-row">
+                <span>30d</span> <span id="m-30d" class="percent-tag">0%</span>
+            </div>
+             <div class="history-row">
+                <span>1y</span> <span id="m-1y" class="percent-tag">0%</span>
+            </div>
+        </div>
+
+        <div class="modal-actions">
+            <a id="m-link-cg" href="#" target="_blank" class="action-btn cg-btn">
+                CoinGecko
+            </a>
+            <a id="m-link-tv" href="#" target="_blank" class="action-btn tv-btn">
+                <i class="fas fa-chart-line"></i> TradingView
+            </a>
+        </div>
+    </div>
+</div>
+    <script src="scripts/common.js"></script>
+<script src="scripts/home.js"></script>
+</body>
+</html>

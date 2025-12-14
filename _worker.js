@@ -1,55 +1,10 @@
 // _worker.js
 
-// =================================================================================
-// PART 1: ROUTING LOGIC (TRAFFIC CONTROLLER)
-// =================================================================================
-export default {
-    async fetch(request, env, ctx) {
-        const url = new URL(request.url);
-        
-        // --- ROUTING DECISION ---
-        // We check the "Referer" header. 
-        // User confirmed the URL comes through as ".../dex-movers" (no .html)
-        const referer = (request.headers.get("Referer") || "").toLowerCase();
-        
-        // This check detects if the user is currently on the Dex Movers page
-        const isDexPage = referer.includes("dex-movers");
-        
-        // 1. IMAGE PROXY -> Always Dex Logic
-        if (url.pathname === "/api/image-proxy") {
-            return handleDexImageProxy(request, env, url);
-        }
+// ==============================================================================
+// 1. ROUTING & CONFIGURATION
+// ==============================================================================
 
-        // 2. STATS API -> Router
-        if (url.pathname === "/api/stats") {
-            // IF: Calling from "dex-movers" OR asking for specific network
-            if (isDexPage || url.searchParams.has("network")) {
-                // If it is the Dex Page but no network is specified, 
-                // we FORCE the default to 'solana' to stop the spinner.
-                const network = url.searchParams.get("network") || "solana";
-                return handleDexStatsWithCache(request, env, ctx, network);
-            }
-            
-            // ELSE: Homepage / Main Site -> FORCE PRIMARY LOGIC
-            return handlePrimaryStats(request, env, ctx);
-        }
-
-        // 3. SITEMAP -> Primary Logic
-        if (url.pathname === "/sitemap.xml") {
-            return handlePrimarySitemap(request, env);
-        }
-
-        // 4. FALLBACK -> Static Assets
-        return env.ASSETS.fetch(request);
-    }
-};
-
-
-// =================================================================================
-// PART 2: PRIMARY LOGIC (COINGECKO / CEX)
-// Exact copy of "_worker primary.js" -> Variables prefixed with PRI_ to avoid conflict
-// =================================================================================
-
+// --- PRIMARY (CEX) CONFIGURATION ---
 const PRI_CACHE_KEY = "market_data_v7"; 
 const PRI_CACHE_LOCK_KEY = "market_data_lock";
 const PRI_UPDATE_INTERVAL_MS = 15 * 60 * 1000; 
@@ -78,7 +33,78 @@ const PRI_API_HEADERS = {
     "Referer": "https://www.coingecko.com/"
 };
 
-// --- PRIMARY HANDLERS ---
+// --- DEX (GECKOTERMINAL) CONFIGURATION ---
+const DEX_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Cache-Control": "public, max-age=30", 
+};
+
+const DEX_KV_KEY_PREFIX = "dex_cache_";
+const DEX_IMG_CACHE_PREFIX = "img_";
+const DEX_SOFT_REFRESH_MS = 4 * 60 * 1000;   // 4 Minutes
+const DEX_HARD_REFRESH_MS = 5 * 60 * 1000;   // 5 Minutes
+
+const DEX_NETWORK_MAP = {
+    'solana': 'solana',
+    'ethereum': 'eth',
+    'bnb': 'bsc',
+    'base': 'base'
+};
+
+// --- MAIN WORKER ---
+export default {
+    async fetch(request, env, ctx) {
+        const url = new URL(request.url);
+        
+        // 1. IMAGE PROXY -> Always DEX
+        if (url.pathname === "/api/image-proxy") {
+            return handleDexImageProxy(request, env, url);
+        }
+
+        // 2. STATS API -> STRICT Parameter Routing
+        // As per your fix: Only check for 'network' param.
+        if (url.pathname === "/api/stats") {
+            const network = url.searchParams.get("network");
+            
+            // IF NETWORK PARAM EXISTS -> DEX LOGIC
+            if (network) {
+                // Validate network support
+                if (!DEX_NETWORK_MAP[network]) {
+                    return new Response(
+                        JSON.stringify({ 
+                            error: true, 
+                            message: `Unsupported network: ${network}. Supported: ${Object.keys(DEX_NETWORK_MAP).join(', ')}` 
+                        }), 
+                        { 
+                            status: 400, 
+                            // Important: CORS headers on error
+                            headers: { ...DEX_HEADERS, "Cache-Control": "no-cache" }
+                        }
+                    );
+                }
+                // Handle Dex Logic
+                return handleDexStatsWithCache(request, env, ctx, network);
+            }
+            
+            // NO NETWORK PARAM -> PRIMARY (HOMEPAGE) LOGIC
+            return handlePrimaryStats(request, env, ctx);
+        }
+
+        // 3. SITEMAP -> Primary Logic
+        if (url.pathname === "/sitemap.xml") {
+            return handlePrimarySitemap(request, env);
+        }
+
+        // 4. FALLBACK -> Static Assets
+        return env.ASSETS.fetch(request);
+    }
+};
+
+
+// ==============================================================================
+// 2. PRIMARY LOGIC (COINGECKO / CEX)
+// ==============================================================================
 
 async function handlePrimarySitemap(request, env) {
     const baseUrl = "https://cryptomovers.pages.dev";
@@ -271,31 +297,21 @@ async function updatePrimaryMarketData(env, existingData, isDeepScan, signal = n
 }
 
 
-// =================================================================================
-// PART 3: DEX MOVERS LOGIC (GECKOTERMINAL)
-// Exact copy of "_worker.js" -> Variables prefixed with DEX_ to avoid conflict
-// =================================================================================
+// ==============================================================================
+// 3. DEX LOGIC (GECKOTERMINAL + IMAGE PROXY)
+// ==============================================================================
 
-const DEX_HEADERS = {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    // Tell browsers to cache API responses for 30s
-    "Cache-Control": "public, max-age=30", 
-};
+// Helper: Ensure CORS is always present on errors
+function dexErrorResponse(message, status = 500) {
+    return new Response(
+        JSON.stringify({ error: true, message }),
+        { 
+            status: status,
+            headers: { ...DEX_HEADERS, "Cache-Control": "no-cache" }
+        }
+    );
+}
 
-const DEX_KV_KEY_PREFIX = "dex_cache_";
-const DEX_IMG_CACHE_PREFIX = "img_";
-const DEX_SOFT_REFRESH_MS = 4 * 60 * 1000;   // 4 Minutes
-const DEX_HARD_REFRESH_MS = 5 * 60 * 1000;   // 5 Minutes
-
-const DEX_NETWORK_MAP = {
-    'solana': 'solana',
-    'ethereum': 'eth',
-    'bnb': 'bsc',
-    'base': 'base'
-};
-
-// === STEALTH HEADERS ===
 function getDexStealthHeaders() {
     const agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -309,15 +325,12 @@ function getDexStealthHeaders() {
     };
 }
 
-// === IMAGE PROXY LOGIC ===
 async function handleDexImageProxy(request, env, url) {
     const targetUrl = url.searchParams.get("url");
     if (!targetUrl) return new Response("Missing URL", { status: 400 });
 
-    // 1. Try to get from Main Database (KV)
     if (env.KV_STORE) {
         const imgKey = DEX_IMG_CACHE_PREFIX + btoa(targetUrl);
-        
         const { value, metadata } = await env.KV_STORE.getWithMetadata(imgKey, { type: "stream" });
         
         if (value) {
@@ -332,7 +345,6 @@ async function handleDexImageProxy(request, env, url) {
         }
     }
 
-    // 2. If not in DB, download it live
     try {
         const imgRes = await fetch(decodeURIComponent(targetUrl), {
             headers: { "User-Agent": "Mozilla/5.0" }
@@ -340,113 +352,93 @@ async function handleDexImageProxy(request, env, url) {
         
         const newHeaders = new Headers(imgRes.headers);
         newHeaders.set("Access-Control-Allow-Origin", "*");
-        newHeaders.set("Cache-Control", "public, max-age=86400"); // 7 Days
+        newHeaders.set("Cache-Control", "public, max-age=86400"); 
 
-        return new Response(imgRes.body, {
-            status: imgRes.status,
-            headers: newHeaders
-        });
+        return new Response(imgRes.body, { status: imgRes.status, headers: newHeaders });
     } catch (e) {
         return new Response("Proxy Error", { status: 500 });
     }
 }
 
-// === DATA CACHING LOGIC ===
 async function handleDexStatsWithCache(request, env, ctx, network) {
-    if (!env.KV_STORE) {
-        return handleDexRawStats(network); // Fallback if no database
-    }
-
-    const cacheKey = `${DEX_KV_KEY_PREFIX}${network}`;
-    const now = Date.now();
-    let cached = null;
-    let age = 0;
-
-    // Try to read cache
     try {
-        const raw = await env.KV_STORE.get(cacheKey);
-        if (raw) {
-            cached = JSON.parse(raw);
-            age = now - (cached.timestamp || 0);
+        if (!env.KV_STORE) {
+            const data = await handleDexRawStats(network);
+            return new Response(JSON.stringify(data), { headers: DEX_HEADERS });
         }
-    } catch (e) { console.error("KV Error", e); }
 
-    // Strategy A: Fresh Cache (0-4 mins) -> Return instantly
-    if (cached && age < DEX_SOFT_REFRESH_MS) {
-        return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fresh" } });
-    }
+        const cacheKey = `${DEX_KV_KEY_PREFIX}${network}`;
+        const now = Date.now();
+        let cached = null;
+        let age = 0;
 
-    // Strategy B: Stale Cache (4-5 mins) -> Return old data, update in background
-    if (cached && age < DEX_HARD_REFRESH_MS) {
-        ctx.waitUntil(refreshDexData(env, network, cacheKey, ctx));
-        return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Stale-Background" } });
-    }
+        try {
+            const raw = await env.KV_STORE.get(cacheKey);
+            if (raw) {
+                cached = JSON.parse(raw);
+                age = now - (cached.timestamp || 0);
+            }
+        } catch (e) { console.error("KV Error", e); }
 
-    // Strategy C: Expired (>5 mins) -> Blocking update
-    console.log(`Cache expired for ${network}. Fetching live...`);
-    try {
-        const freshData = await refreshDexData(env, network, cacheKey, ctx);
-        return new Response(JSON.stringify(freshData), { headers: { ...DEX_HEADERS, "X-Source": "Live-Fetch" } });
+        // Strategy A: Fresh Cache
+        if (cached && age < DEX_SOFT_REFRESH_MS) {
+            return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fresh" } });
+        }
+
+        // Strategy B: Stale Cache
+        if (cached && age < DEX_HARD_REFRESH_MS) {
+            ctx.waitUntil(refreshDexData(env, network, cacheKey, ctx));
+            return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Stale-Background" } });
+        }
+
+        // Strategy C: Expired/Missing -> Live Fetch
+        console.log(`Cache expired for ${network}. Fetching live...`);
+        try {
+            const freshData = await refreshDexData(env, network, cacheKey, ctx);
+            return new Response(JSON.stringify(freshData), { headers: { ...DEX_HEADERS, "X-Source": "Live-Fetch" } });
+        } catch (e) {
+            if (cached) {
+                return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fallback" } });
+            }
+            return dexErrorResponse(e.message, 200);
+        }
     } catch (e) {
-        if (cached) return new Response(JSON.stringify(cached), { headers: { ...DEX_HEADERS, "X-Source": "Cache-Fallback" } });
-        return new Response(JSON.stringify({ error: true, message: e.message }), { status: 200, headers: DEX_HEADERS });
+        return dexErrorResponse(e.message, 500);
     }
 }
 
-// === DEEP SCAN: DATA + IMAGE PRE-FETCHING ===
 async function refreshDexData(env, network, key, ctx) {
     const data = await handleDexRawStats(network); 
     
     if (data && !data.error && data.gainers) {
-        // 1. Save the JSON data
         await env.KV_STORE.put(key, JSON.stringify(data), { expirationTtl: 1800 });
         
-        // 2. TRIGGER BACKGROUND IMAGE CACHING
         if (ctx && ctx.waitUntil) {
-            const topTokens = [
-                ...data.gainers.slice(0, 20), 
-                ...data.losers.slice(0, 20)
-            ];
+            const topTokens = [...data.gainers.slice(0, 20), ...data.losers.slice(0, 20)];
             ctx.waitUntil(backgroundDexCacheImages(env, topTokens));
         }
     }
     return data;
 }
 
-// === BACKGROUND TASK: DOWNLOAD & SAVE IMAGES ===
 async function backgroundDexCacheImages(env, tokens) {
     if (!env.KV_STORE) return;
-
     const fetches = tokens.map(async (token) => {
         if (!token.image || token.image.includes("bullish.png")) return;
-
         const imgUrl = token.image;
-        const imgKey = DEX_IMG_CACHE_PREFIX + btoa(imgUrl); // Unique Key
-
+        const imgKey = DEX_IMG_CACHE_PREFIX + btoa(imgUrl); 
         try {
-            const res = await fetch(imgUrl, { 
-                headers: { "User-Agent": "Mozilla/5.0" } 
-            });
-
+            const res = await fetch(imgUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
             if (res.ok) {
                 const blob = await res.arrayBuffer();
                 const type = res.headers.get("Content-Type") || "image/png";
-
-                // Save to KV (Database) with 7 Day Expiration
-                await env.KV_STORE.put(imgKey, blob, { 
-                    expirationTtl: 604800, 
-                    metadata: { contentType: type } 
-                });
+                await env.KV_STORE.put(imgKey, blob, { expirationTtl: 604800, metadata: { contentType: type } });
             }
-        } catch (err) {
-            console.log(`Failed to cache image for ${token.symbol}`);
-        }
+        } catch (err) { console.log(`Failed to cache image for ${token.symbol}`); }
     });
-
     await Promise.all(fetches);
 }
 
-// === API LOGIC ===
 async function handleDexRawStats(networkKey) {
     const apiSlug = DEX_NETWORK_MAP[networkKey];
     if (!apiSlug) throw new Error("Invalid Network");
@@ -459,7 +451,6 @@ async function handleDexRawStats(networkKey) {
         );
 
         const responses = await Promise.all(promises);
-        
         let allPools = [];
         let allIncluded = [];
 
@@ -494,33 +485,18 @@ async function handleDexRawStats(networkKey) {
             };
         });
 
-        // FILTER: Remove scams ($0 price or <$1000 volume)
         formatted = formatted.filter(p => p.price > 0 && p.volume_24h > 1000);
-
-        // Deduplicate
         const unique = [];
         const seen = new Set();
         for (const item of formatted) {
-            if (!seen.has(item.symbol)) {
-                seen.add(item.symbol);
-                unique.push(item);
-            }
+            if (!seen.has(item.symbol)) { seen.add(item.symbol); unique.push(item); }
         }
 
         const onlyGainers = unique.filter(x => x.change_24h > 0);
         const onlyLosers = unique.filter(x => x.change_24h < 0);
-
         const gainers = onlyGainers.sort((a, b) => b.change_24h - a.change_24h).slice(0, 50);
         const losers = onlyLosers.sort((a, b) => a.change_24h - b.change_24h).slice(0, 50);
 
-        return {
-            timestamp: Date.now(),
-            network: networkKey,
-            gainers,
-            losers
-        };
-
-    } catch (e) {
-        throw new Error(`Worker Error: ${e.message}`);
-    }
+        return { timestamp: Date.now(), network: networkKey, gainers, losers };
+    } catch (e) { throw new Error(`Worker Error: ${e.message}`); }
 }

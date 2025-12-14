@@ -1,6 +1,5 @@
 [
   { "path": "/", "priority": 1.0, "changefreq": "daily" },
-  { "path": "/dex-movers", "priority": 0.8, "changefreq": "daily" },
   { "path": "/more-tools", "priority": 0.8, "changefreq": "weekly" },
   { "path": "/about-us", "priority": 0.5, "changefreq": "monthly" },
   { "path": "/contact-us", "priority": 0.5, "changefreq": "monthly" }

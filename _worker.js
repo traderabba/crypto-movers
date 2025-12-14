@@ -1,6 +1,5 @@
-// _worker.js
-// Architecture: Single-File Modular (Class-Based)
-// Status: PRODUCTION READY (Restored CEX Fields + Error Handling)
+// _worker.js - FINAL MERGED VERSION
+// Status: Production Ready - All fixes applied
 
 // ============================================================================
 // CONFIGURATION
@@ -16,16 +15,18 @@ const CONFIG = {
         },
         HEADERS_IMG: {
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "public, max-age=604800", // 7 Days (KV)
+            "Cache-Control": "public, max-age=604800", // 7 Days
             "X-Source": "Worker-KV-Cache"
         }
     },
     CEX: {
         CACHE_KEY: "market_data_v7",
         LOCK_KEY: "market_data_lock",
-        SOFT_REFRESH: 12 * 60 * 1000,
-        TIMEOUT: 45000,
-        LOCK_TIMEOUT: 120000,
+        SOFT_REFRESH: 12 * 60 * 1000,     // 12 minutes
+        MIN_RETRY_DELAY: 2 * 60 * 1000,   // 2 minutes
+        TIMEOUT: 45000,                   // 45 seconds
+        LOCK_TIMEOUT: 120000,             // 2 minutes
+        UPDATE_INTERVAL: 15 * 60 * 1000,  // 15 minutes
         EXCLUSIONS: [
             "/exclusions/stablecoins-exclusion-list.json",
             "/exclusions/wrapped-tokens-exclusion-list.json"
@@ -33,14 +34,15 @@ const CONFIG = {
         API_HEADERS: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.coingecko.com/"
         }
     },
     DEX: {
         CACHE_PREFIX: "dex_cache_",
         IMG_PREFIX: "img_",
-        SOFT_REFRESH: 4 * 60 * 1000,
-        HARD_REFRESH: 5 * 60 * 1000,
+        SOFT_REFRESH: 4 * 60 * 1000,   // 4 minutes
+        HARD_REFRESH: 5 * 60 * 1000,   // 5 minutes
         NETWORKS: { 
             'solana': 'solana', 
             'ethereum': 'eth', 
@@ -83,128 +85,147 @@ class SharedTools {
 }
 
 // ============================================================================
-// MODULE 2: CEX WORKER (Homepage Logic)
+// MODULE 2: CEX WORKER (Homepage Logic - CoinGecko)
 // ============================================================================
 class CexWorker {
     constructor(env) {
         this.env = env;
+        this.updateAttemptTime = Date.now();
     }
 
     async handleRequest(ctx) {
-        if (!this.env.KV_STORE) return this.#error("KV_STORE binding missing");
+        if (!this.env.KV_STORE) {
+            return this.#error("KV_STORE binding missing");
+        }
 
         try {
             const [cachedRaw, lock] = await Promise.all([
                 this.env.KV_STORE.get(CONFIG.CEX.CACHE_KEY),
                 this.env.KV_STORE.get(CONFIG.CEX.LOCK_KEY)
             ]);
-
+            
             const now = Date.now();
-            let cached = null;
-            let age = 0;
+            let cachedData = null;
+            let dataAge = 0;
 
             if (cachedRaw) {
                 try {
-                    cached = JSON.parse(cachedRaw);
-                    age = now - (cached.timestamp || 0);
-                } catch (e) { console.error("Cache corrupted:", e); }
+                    cachedData = JSON.parse(cachedRaw);
+                    dataAge = now - (cachedData.timestamp || 0);
+                } catch (e) { 
+                    console.error("CEX: Cache corrupted:", e); 
+                }
             }
 
             const isUpdating = lock && (now - parseInt(lock)) < CONFIG.CEX.LOCK_TIMEOUT;
 
-            // 1. Fresh Cache
-            if (cached && age < CONFIG.CEX.SOFT_REFRESH) {
-                return this.#json(cachedRaw, "Cache-Fresh");
+            // Strategy 1: Fresh Cache
+            if (cachedData && dataAge < CONFIG.CEX.SOFT_REFRESH) {
+                return this.#json(cachedRaw, "Crypto-Cache-Fresh");
             }
 
-            // 2. Update in Progress
-            if (isUpdating && cached) {
-                return this.#json(cachedRaw, "Cache-UpdateInProgress");
+            // Strategy 2: Update in Progress
+            if (isUpdating && cachedData) {
+                return this.#json(cachedRaw, "Crypto-Cache-UpdateInProgress");
             }
 
-            // 3. Stale -> Background Update
-            if (cached) {
-                const lastAttemptAge = now - (cached.lastUpdateAttempt || 0);
-                if (lastAttemptAge >= (2 * 60 * 1000)) { 
-                    console.log("Triggering Background Update...");
-                    await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { expirationTtl: 120 });
+            // Strategy 3: Stale -> Trigger Background Update
+            if (cachedData && dataAge >= CONFIG.CEX.SOFT_REFRESH) {
+                const lastAttemptAge = now - (cachedData.lastUpdateAttempt || 0);
+                
+                if (lastAttemptAge >= CONFIG.CEX.MIN_RETRY_DELAY) {
+                    console.log("Crypto: Triggering Background Update...");
+                    
+                    await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { 
+                        expirationTtl: Math.floor(CONFIG.CEX.LOCK_TIMEOUT / 1000) 
+                    });
+                    
                     ctx.waitUntil(
-                        this.#updateData(cached, true)
+                        this.#updateMarketDataSafe(cachedData, true)
                             .finally(() => this.env.KV_STORE.delete(CONFIG.CEX.LOCK_KEY).catch(() => {}))
                     );
-                    return this.#json(cachedRaw, "Cache-Proactive");
+                    
+                    return this.#json(cachedRaw, "Crypto-Cache-Proactive");
+                } else {
+                    return this.#json(cachedRaw, "Crypto-Cache-RateLimited");
                 }
-                return this.#json(cachedRaw, "Cache-RateLimited");
             }
 
-            // 4. No Cache -> Live Fetch
-            console.log("Cache empty. Starting Sprint...");
-            await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { expirationTtl: 120 });
+            // Strategy 4: No Cache -> Live Fetch
+            console.log("Crypto: Cache empty. Starting Sprint...");
+            await this.env.KV_STORE.put(CONFIG.CEX.LOCK_KEY, now.toString(), { 
+                expirationTtl: Math.floor(CONFIG.CEX.LOCK_TIMEOUT / 1000) 
+            });
             
             try {
-                // Pass 'null' as existing data since we have none
-                const fresh = await this.#fetchWithTimeout(false, null);
-                await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, fresh, { expirationTtl: 172800 });
+                const freshJson = await this.#fetchWithTimeout(false);
+                
+                await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, freshJson, { expirationTtl: 172800 });
                 await this.env.KV_STORE.delete(CONFIG.CEX.LOCK_KEY).catch(() => {});
-                return this.#json(fresh, "Live-Fetch-Sprint");
+                
+                return this.#json(freshJson, "Crypto-Live-Fetch-Sprint");
             } catch (error) {
                 await this.env.KV_STORE.delete(CONFIG.CEX.LOCK_KEY).catch(() => {});
                 
-                // RESTORED ERROR HANDLING: If we have old data, return it with error flags
-                if (cached) {
+                if (cachedData) {
+                    // Return cached data with error metadata
                     const fallback = {
-                        ...cached,
+                        ...cachedData,
                         lastUpdateAttempt: now,
                         lastUpdateFailed: true,
-                        lastError: error.message || "Fetch failed",
-                        timestamp: cached.timestamp // Keep original timestamp
+                        lastError: error.message
                     };
-                    // Save failure state briefly (5 mins)
                     await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, JSON.stringify(fallback), { expirationTtl: 300 });
-                    return this.#json(JSON.stringify(fallback), "Cache-Fallback-Error");
+                    return this.#json(fallback, "Crypto-Cache-Fallback-Error");
                 }
                 throw error;
             }
 
-        } catch (e) {
-            return this.#error(e.message);
+        } catch (err) {
+            return this.#error(err.message);
         }
     }
 
-    async #updateData(existingData, isDeepScan) {
-        try {
-            const fresh = await this.#fetchWithTimeout(isDeepScan, existingData);
-            await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, fresh, { expirationTtl: 172800 });
+    async #updateMarketDataSafe(existingData, isDeepScan) {
+        try { 
+            await this.#updateMarketData(existingData, isDeepScan); 
         } catch (e) { 
-            console.error("Background update failed:", e); 
-            // Note: Original code didn't update KV on background failure, so we just log it.
+            console.error("Crypto background update failed:", e); 
         }
     }
 
-    async #fetchWithTimeout(isDeepScan, existingData) {
+    async #fetchWithTimeout(isDeepScan) {
         const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), CONFIG.CEX.TIMEOUT);
+        const timeoutId = setTimeout(() => controller.abort(), CONFIG.CEX.TIMEOUT);
+        
         try {
-            const res = await this.#performFetch(isDeepScan, controller.signal, existingData);
-            clearTimeout(id);
-            return res;
-        } catch (e) {
-            clearTimeout(id);
-            if (e.name === 'AbortError') throw new Error("Request timeout");
-            if (e.message.includes("Rate Limit") || e.message.includes("429")) throw new Error("CoinGecko Busy (429). Wait 1 min.");
-            throw e;
+            const result = await this.#updateMarketData(null, isDeepScan, controller.signal);
+            clearTimeout(timeoutId);
+            return result;
+        } catch (err) {
+            clearTimeout(timeoutId);
+            if (err.name === 'AbortError') throw new Error("Crypto request timeout. Try again.");
+            if (err.message.includes("Rate Limit") || err.message.includes("429")) {
+                throw new Error("CoinGecko Busy (429). Wait 1 min.");
+            }
+            throw err;
         }
     }
 
-    async #performFetch(isDeepScan, signal, existingData) {
-        const updateAttemptTime = Date.now(); // RESTORED: Capture attempt time
+    async #updateMarketData(existingData, isDeepScan, signal = null) {
+        const updateAttemptTime = Date.now();
         const pages = isDeepScan ? [1, 2, 3, 4, 5, 6] : [1];
+        const perPage = 250;
         let allCoins = [];
         let hitRateLimit = false;
         let lastError = null;
-
+        
+        // Fetch exclusion lists
         const exclusionSet = await this.#getExclusions();
-        const config = { headers: CONFIG.CEX.API_HEADERS, signal };
+        console.log(`Crypto: Loaded ${exclusionSet.size} exclusions.`);
+
+        const config = { headers: CONFIG.CEX.API_HEADERS };
+        if (signal) config.signal = signal;
 
         for (const page of pages) {
             if (hitRateLimit) break;
@@ -216,10 +237,12 @@ class CexWorker {
             while (attempts < MAX_ATTEMPTS && !success && !hitRateLimit) {
                 attempts++;
                 try {
-                    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}&price_change_percentage=24h,7d,30d,1y`;
-                    const res = await fetch(url, config);
+                    const res = await fetch(
+                        `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}&price_change_percentage=24h,7d,30d,1y`, 
+                        config
+                    );
                     
-                    if (res.status === 429) { 
+                    if (res.status === 429) {
                         if (attempts >= MAX_ATTEMPTS) {
                             hitRateLimit = true;
                             lastError = "Rate limit reached";
@@ -227,15 +250,17 @@ class CexWorker {
                         throw new Error("Rate Limit");
                     }
                     
-                    if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                    if (!res.ok) throw new Error(`Crypto API Error: ${res.status}`);
                     
                     const data = await res.json();
-                    if (!Array.isArray(data)) throw new Error("Invalid Data");
+                    if (!Array.isArray(data)) throw new Error("Invalid Crypto Data");
                     
                     allCoins = allCoins.concat(data);
                     success = true;
                     
-                    if (pages.length > 1 && page < pages.length) await new Promise(r => setTimeout(r, 2000));
+                    if (pages.length > 1 && page < pages.length) {
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
 
                 } catch (innerErr) {
                     lastError = innerErr.message;
@@ -246,66 +271,91 @@ class CexWorker {
             }
         }
 
-        // RESTORED: Handle empty data fallback
         if (allCoins.length === 0) {
             if (existingData) {
-                return JSON.stringify({
+                const fallback = JSON.stringify({
                     ...existingData,
                     lastUpdateAttempt: updateAttemptTime,
                     lastUpdateFailed: true,
-                    lastError: lastError || "Fetch failed",
+                    lastError: lastError || "Crypto fetch failed",
                     timestamp: existingData.timestamp
                 });
+                await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, fallback, { expirationTtl: 300 });
+                return fallback;
             }
-            throw new Error(`Market data unavailable: ${lastError}`);
+            throw new Error(`Crypto data unavailable: ${lastError}`);
         }
 
-        // Filter
+        // Filter using exclusion set
         const valid = allCoins.filter(c => {
-            if (!c || !c.symbol || c.price_change_percentage_24h == null || c.current_price == null) return false;
-            return !exclusionSet.has(c.symbol.toLowerCase());
+            if (!c || !c.symbol || c.price_change_percentage_24h == null || c.current_price == null) {
+                return false;
+            }
+            
+            const symbol = c.symbol.toLowerCase();
+            if (exclusionSet.has(symbol)) return false;
+
+            return true;
+        });
+        
+        // Format data for crypto frontend
+        const formatCoin = (coin) => ({
+            id: coin.id,
+            symbol: coin.symbol,
+            name: coin.name,
+            image: coin.image,
+            current_price: coin.current_price,
+            market_cap: coin.market_cap,
+            total_volume: coin.total_volume,
+            price_change_percentage_24h: coin.price_change_percentage_24h,
+            price_change_percentage_7d: coin.price_change_percentage_7d_in_currency,
+            price_change_percentage_30d: coin.price_change_percentage_30d_in_currency,
+            price_change_percentage_1y: coin.price_change_percentage_1y_in_currency
         });
 
-        // Format
-        const formatCoin = (c) => ({
-            id: c.id, symbol: c.symbol, name: c.name, image: c.image,
-            current_price: c.current_price, market_cap: c.market_cap,
-            total_volume: c.total_volume,
-            price_change_percentage_24h: c.price_change_percentage_24h,
-            price_change_percentage_7d: c.price_change_percentage_7d_in_currency,
-            price_change_percentage_30d: c.price_change_percentage_30d_in_currency,
-            price_change_percentage_1y: c.price_change_percentage_1y_in_currency
-        });
+        const gainers = [...valid].sort((a, b) => 
+            b.price_change_percentage_24h - a.price_change_percentage_24h
+        ).slice(0, 50).map(formatCoin);
+        
+        const losers = [...valid].sort((a, b) => 
+            a.price_change_percentage_24h - b.price_change_percentage_24h
+        ).slice(0, 50).map(formatCoin);
 
-        const gainers = [...valid].sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h).slice(0, 50).map(formatCoin);
-        const losers = [...valid].sort((a, b) => a.price_change_percentage_24h - b.price_change_percentage_24h).slice(0, 50).map(formatCoin);
-
-        // RESTORED: Full response structure
-        return JSON.stringify({
+        const finalObject = {
             timestamp: Date.now(),
             lastUpdateAttempt: updateAttemptTime,
             lastUpdateFailed: false,
             totalScanned: allCoins.length,
             excludedCount: allCoins.length - valid.length,
             isPartial: hitRateLimit,
-            gainers, 
+            gainers,
             losers
-        });
+        };
+
+        const jsonString = JSON.stringify(finalObject);
+        await this.env.KV_STORE.put(CONFIG.CEX.CACHE_KEY, jsonString, { expirationTtl: 172800 });
+        return jsonString;
     }
 
     async #getExclusions() {
-        const set = new Set();
-        const baseUrl = "http://placeholder"; 
+        const exclusionSet = new Set();
+        const baseUrl = "http://placeholder";
+
         await Promise.all(CONFIG.CEX.EXCLUSIONS.map(async (filePath) => {
             try {
                 const res = await this.env.ASSETS.fetch(new URL(filePath, baseUrl));
                 if (res.ok) {
                     const list = await res.json();
-                    if (Array.isArray(list)) list.forEach(i => set.add(i.toLowerCase()));
+                    if (Array.isArray(list)) {
+                        list.forEach(item => exclusionSet.add(item.toLowerCase()));
+                    }
                 }
-            } catch (e) { /* ignore missing */ }
+            } catch (e) {
+                console.warn(`Failed to load crypto exclusion list: ${filePath}`, e);
+            }
         }));
-        return set;
+        
+        return exclusionSet;
     }
 
     #json(data, source) {
@@ -322,116 +372,146 @@ class CexWorker {
 }
 
 // ============================================================================
-// MODULE 3: DEX WORKER (DexMovers Logic)
+// MODULE 3: DEX WORKER (DexMovers Logic - GeckoTerminal)
 // ============================================================================
 class DexWorker {
     constructor(env) {
         this.env = env;
     }
 
+    // --- IMAGE PROXY ---
     async handleImageProxy(urlStr) {
         const targetUrl = new URL(urlStr).searchParams.get("url");
         if (!targetUrl) return new Response("Missing URL", { status: 400 });
 
+        // 1. Try KV Cache
         if (this.env.KV_STORE) {
             const key = CONFIG.DEX.IMG_PREFIX + btoa(targetUrl);
             const { value, metadata } = await this.env.KV_STORE.getWithMetadata(key, { type: "stream" });
             if (value) {
                 return new Response(value, {
-                    headers: { ...CONFIG.SHARED.HEADERS_IMG, "Content-Type": metadata?.contentType || "image/png" }
+                    headers: { 
+                        ...CONFIG.SHARED.HEADERS_IMG, 
+                        "Content-Type": metadata?.contentType || "image/png" 
+                    }
                 });
             }
         }
 
+        // 2. Fetch Live
         try {
             const res = await fetch(decodeURIComponent(targetUrl), { 
                 headers: { "User-Agent": "Mozilla/5.0" } 
             });
             const headers = new Headers(res.headers);
             headers.set("Access-Control-Allow-Origin", "*");
-            headers.set("Cache-Control", "public, max-age=86400"); // 1 Day (Live)
+            headers.set("Cache-Control", "public, max-age=86400"); // Browser: 1 day
             return new Response(res.body, { status: res.status, headers });
         } catch (e) {
             return new Response("Proxy Error", { status: 500 });
         }
     }
 
+    // --- DEX STATS ---
     async handleStats(ctx, network) {
-        if (!this.env.KV_STORE) {
-            try {
-                const live = await this.#fetchLive(network);
-                return this.#json(live, "Live-NoKV");
-            } catch (e) {
-                return this.#error(e.message);
-            }
-        }
+        if (!this.env.KV_STORE) return this.#fetchLive(network);
 
-        const key = CONFIG.DEX.CACHE_PREFIX + network;
-        const raw = await this.env.KV_STORE.get(key);
+        const cacheKey = `${CONFIG.DEX.CACHE_PREFIX}${network}`;
+        const now = Date.now();
         let cached = null;
-        let age = 999999;
+        let age = 0;
 
-        if (raw) {
-            try {
-                cached = JSON.parse(raw);
-                age = Date.now() - (cached.timestamp || 0);
-            } catch(e) {}
-        }
-
-        // 1. Fresh Cache
-        if (cached && age < CONFIG.DEX.SOFT_REFRESH) {
-            return this.#json(cached, "Cache-Fresh");
-        }
-
-        // 2. Stale Cache (Background Update)
-        if (cached && age < CONFIG.DEX.HARD_REFRESH) {
-            ctx.waitUntil(this.#bgRefresh(network, key, ctx));
-            return this.#json(cached, "Cache-Stale-Background");
-        }
-
-        // 3. Live Fetch (Blocking)
+        // Try to read cache
         try {
-            const fresh = await this.#fetchLive(network);
-            await this.env.KV_STORE.put(key, JSON.stringify(fresh), { expirationTtl: 1800 });
-            if(ctx && ctx.waitUntil) ctx.waitUntil(this.#cacheImages(fresh));
-            return this.#json(fresh, "Live-Fetch");
+            const raw = await this.env.KV_STORE.get(cacheKey);
+            if (raw) {
+                cached = JSON.parse(raw);
+                age = now - (cached.timestamp || 0);
+            }
+        } catch (e) { 
+            console.error("DEX KV Error", e); 
+        }
+
+        // Strategy A: Fresh Cache (0-4 mins)
+        if (cached && age < CONFIG.DEX.SOFT_REFRESH) {
+            return this.#json(cached, "DEX-Cache-Fresh");
+        }
+
+        // Strategy B: Stale Cache (4-5 mins) -> Return old data, update in background
+        if (cached && age < CONFIG.DEX.HARD_REFRESH) {
+            ctx.waitUntil(this.#refreshData(network, cacheKey, ctx));
+            return this.#json(cached, "DEX-Cache-Stale-Background");
+        }
+
+        // Strategy C: Expired (>5 mins) -> Blocking update
+        console.log(`DEX: Cache expired for ${network}. Fetching live...`);
+        try {
+            const freshData = await this.#refreshData(network, cacheKey, ctx);
+            return this.#json(freshData, "DEX-Live-Fetch");
         } catch (e) {
-            if (cached) return this.#json(cached, "Cache-Fallback");
+            if (cached) {
+                return this.#json(cached, "DEX-Cache-Fallback");
+            }
             return this.#error(e.message);
         }
     }
 
-    async #bgRefresh(network, key, ctx) {
-        try {
-            const data = await this.#fetchLive(network);
+    async #refreshData(network, key, ctx) {
+        const data = await this.#fetchLive(network); 
+        
+        if (data && !data.error && data.gainers) {
+            // Save JSON data
             await this.env.KV_STORE.put(key, JSON.stringify(data), { expirationTtl: 1800 });
-            await this.#cacheImages(data);
-        } catch (e) { console.log("DEX BG Update Failed"); }
+            
+            // Trigger background image caching for top tokens
+            if (ctx && ctx.waitUntil) {
+                const topTokens = [
+                    ...data.gainers.slice(0, 20), 
+                    ...data.losers.slice(0, 20)
+                ];
+                ctx.waitUntil(this.#backgroundCacheImages(topTokens));
+            }
+        }
+        return data;
     }
 
-    async #cacheImages(data) {
+    async #backgroundCacheImages(tokens) {
         if (!this.env.KV_STORE) return;
-        const tokens = [...data.gainers.slice(0, 20), ...data.losers.slice(0, 20)];
+
         const fetches = tokens.map(async (token) => {
             if (!token.image || token.image.includes("bullish.png")) return;
-            const imgKey = CONFIG.DEX.IMG_PREFIX + btoa(token.image);
+
+            const imgUrl = token.image;
+            const imgKey = CONFIG.DEX.IMG_PREFIX + btoa(imgUrl);
+
             try {
-                const res = await fetch(token.image, { headers: { "User-Agent": "Mozilla/5.0" } });
+                const res = await fetch(imgUrl, { 
+                    headers: { "User-Agent": "Mozilla/5.0" } 
+                });
+
                 if (res.ok) {
                     const blob = await res.arrayBuffer();
                     const type = res.headers.get("Content-Type") || "image/png";
-                    await this.env.KV_STORE.put(imgKey, blob, { expirationTtl: 604800, metadata: { contentType: type } });
+
+                    await this.env.KV_STORE.put(imgKey, blob, { 
+                        expirationTtl: 604800, 
+                        metadata: { contentType: type } 
+                    });
                 }
-            } catch (err) {}
+            } catch (err) {
+                console.log(`Failed to cache image for ${token.symbol}`);
+            }
         });
+
         await Promise.all(fetches);
     }
 
     async #fetchLive(networkKey) {
-        const slug = CONFIG.DEX.NETWORKS[networkKey];
-        if (!slug) throw new Error("Invalid Network");
+        const apiSlug = CONFIG.DEX.NETWORKS[networkKey];
+        if (!apiSlug) throw new Error("Invalid Network");
 
-        const getHeaders = () => {
+        // Stealth headers to prevent 403
+        const getStealthHeaders = () => {
             const agents = [
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
@@ -444,67 +524,80 @@ class DexWorker {
             };
         };
 
-        const promises = [1, 2, 3, 4, 5].map(page => 
-            fetch(`https://api.geckoterminal.com/api/v2/networks/${slug}/trending_pools?include=base_token&page=${page}`, { 
-                headers: getHeaders()
-            })
-        );
+        try {
+            // Fetch 5 pages to get deep data
+            const promises = [1, 2, 3, 4, 5].map(page => 
+                fetch(`https://api.geckoterminal.com/api/v2/networks/${apiSlug}/trending_pools?include=base_token&page=${page}`, { 
+                    headers: getStealthHeaders() 
+                })
+            );
 
-        const responses = await Promise.all(promises);
-        let allPools = [];
-        let allIncluded = [];
+            const responses = await Promise.all(promises);
+            
+            let allPools = [];
+            let allIncluded = [];
 
-        for (const res of responses) {
-            if (res.ok) {
-                const data = await res.json();
-                if (data.data) allPools = allPools.concat(data.data);
-                if (data.included) allIncluded = allIncluded.concat(data.included);
+            for (const res of responses) {
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.data) allPools = allPools.concat(data.data);
+                    if (data.included) allIncluded = allIncluded.concat(data.included);
+                }
             }
-        }
 
-        if (allPools.length === 0) throw new Error("No Pools Found");
+            if (allPools.length === 0) throw new Error("GeckoTerminal API: No Pools Found");
 
-        let formatted = allPools.map(pool => {
-            const baseTokenId = pool.relationships?.base_token?.data?.id;
-            const tokenData = allIncluded.find(i => i.id === baseTokenId && i.type === 'token');
-            const attr = pool.attributes;
-            const changes = attr.price_change_percentage || {};
+            // Format for DEX frontend
+            let formatted = allPools.map(pool => {
+                const baseTokenId = pool.relationships?.base_token?.data?.id;
+                const tokenData = allIncluded.find(i => i.id === baseTokenId && i.type === 'token');
+                const attr = pool.attributes;
+                const changes = attr.price_change_percentage || {};
+
+                return {
+                    symbol: attr.name.split('/')[0].trim(),
+                    name: tokenData?.attributes?.name || attr.name,
+                    image: tokenData?.attributes?.image_url || "/images/bullish.png",
+                    price: parseFloat(attr.base_token_price_usd) || 0,
+                    change_30m: parseFloat(changes.m30) || 0,
+                    change_1h: parseFloat(changes.h1) || 0,
+                    change_6h: parseFloat(changes.h6) || 0,
+                    change_24h: parseFloat(changes.h24) || 0,
+                    volume_24h: parseFloat(attr.volume_usd?.h24) || 0,
+                    fdv: parseFloat(attr.fdv_usd) || 0,
+                    address: attr.address
+                };
+            });
+
+            // FILTER: Remove scams ($0 price or <$1000 volume)
+            formatted = formatted.filter(p => p.price > 0 && p.volume_24h > 1000);
+
+            // Deduplicate
+            const unique = [];
+            const seen = new Set();
+            for (const item of formatted) {
+                if (!seen.has(item.symbol)) {
+                    seen.add(item.symbol);
+                    unique.push(item);
+                }
+            }
+
+            const onlyGainers = unique.filter(x => x.change_24h > 0);
+            const onlyLosers = unique.filter(x => x.change_24h < 0);
+
+            const gainers = onlyGainers.sort((a, b) => b.change_24h - a.change_24h).slice(0, 50);
+            const losers = onlyLosers.sort((a, b) => a.change_24h - b.change_24h).slice(0, 50);
 
             return {
-                symbol: attr.name.split('/')[0].trim(),
-                name: tokenData?.attributes?.name || attr.name,
-                image: tokenData?.attributes?.image_url || "/images/bullish.png",
-                price: parseFloat(attr.base_token_price_usd) || 0,
-                change_30m: parseFloat(changes.m30) || 0,
-                change_1h: parseFloat(changes.h1) || 0,
-                change_6h: parseFloat(changes.h6) || 0,
-                change_24h: parseFloat(changes.h24) || 0,
-                volume_24h: parseFloat(attr.volume_usd?.h24) || 0,
-                fdv: parseFloat(attr.fdv_usd) || 0,
-                address: attr.address
+                timestamp: Date.now(),
+                network: networkKey,
+                gainers,
+                losers
             };
-        });
 
-        formatted = formatted.filter(p => p.price > 0 && p.volume_24h > 1000);
-
-        const unique = [];
-        const seen = new Set();
-        for (const item of formatted) {
-            if (!seen.has(item.symbol)) {
-                seen.add(item.symbol);
-                unique.push(item);
-            }
+        } catch (e) {
+            throw new Error(`DEX Worker Error: ${e.message}`);
         }
-
-        const onlyGainers = unique.filter(x => x.change_24h > 0);
-        const onlyLosers = unique.filter(x => x.change_24h < 0);
-
-        return {
-            timestamp: Date.now(),
-            network: networkKey,
-            gainers: onlyGainers.sort((a, b) => b.change_24h - a.change_24h).slice(0, 50),
-            losers: onlyLosers.sort((a, b) => a.change_24h - b.change_24h).slice(0, 50)
-        };
     }
 
     #json(data, source) {
@@ -514,7 +607,10 @@ class DexWorker {
     }
 
     #error(msg) {
-        return new Response(JSON.stringify({ error: true, message: msg }), { status: 500 });
+        return new Response(JSON.stringify({ error: true, message: msg }), { 
+            status: 500, 
+            headers: CONFIG.SHARED.HEADERS_JSON 
+        });
     }
 }
 
@@ -525,23 +621,32 @@ export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
 
+        // 1. Sitemap
         if (url.pathname === "/sitemap.xml") {
             return SharedTools.handleSitemap(request, env);
         }
 
+        // 2. Image Proxy
         if (url.pathname === "/api/image-proxy") {
             return new DexWorker(env).handleImageProxy(request.url);
         }
 
+        // 3. Stats API (Smart Routing Based on Network Parameter)
         if (url.pathname === "/api/stats") {
             const network = url.searchParams.get("network");
+            
             if (network) {
+                // DEX Page Request (has network parameter)
+                console.log(`[ROUTER] DEX request for network: ${network}`);
                 return new DexWorker(env).handleStats(ctx, network);
             } else {
+                // Homepage Request (no network parameter)
+                console.log(`[ROUTER] Crypto request (homepage)`);
                 return new CexWorker(env).handleRequest(ctx);
             }
         }
 
+        // 4. Fallback to Static Assets
         return env.ASSETS.fetch(request);
     }
 };

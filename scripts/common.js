@@ -146,7 +146,7 @@ async function captureSection(type) {
         reportCard.insertAdjacentHTML('beforeend', `
             <div style="font-size: 18px; color: #64748b; font-weight: 600; margin-top: 30px; display:flex; align-items:center; gap:10px;">
                 <img src="/images/bullish.png" style="width:30px;">
-         Generated on https://cryptomovers.pages.dev | by @TraderAbba
+         Generated on https://cryptomovers.pages.dev | by @heisbuba
             </div>
         `);
 
